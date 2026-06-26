@@ -87,13 +87,22 @@ GAMMA_KS: float = 5.3  # Gaussian confidence multiplier
 # ============================================================================
 # Classical channel plan — WDM grid defaults
 # ============================================================================
+# Classical channels occupy low-frequency C-band (first-fit, lowest first).
+# Quantum channel sits at the high end of C-band with a wide guard gap.
+#
+#   Classical        ←── guard ──→  Quantum
+#   190.0 .. 191.55 THz             193.5 THz ± 12.5 GHz
+#   (32 ch × 50 GHz)                (25 GHz BW)
+#
+# Effective guard: 193.5 − 191.5625 ≈ 1.94 THz
 
-N_CLASSICAL_CHANNELS: int = 32  # default number of classical DWDM channels
-CLASSICAL_SPACING_HZ: float = 50e9  # channel spacing [Hz] (50 GHz)
-CLASSICAL_POWER_PER_CH_W: float = 1e-4  # fibre launch power per ch [W] (−10 dBm)
-GUARD_BAND_HZ: float = 1000e9  # guard band Q ↔ nearest classical ch [Hz] (1 THz)
-QUANTUM_FREQ_HZ: float = 193.4e12  # quantum-channel centre frequency [Hz] (1550 nm)
-QUANTUM_BANDWIDTH_GHZ: float = 25.0  # quantum receiver noise bandwidth [GHz]
+N_CLASSICAL_CHANNELS: int = 32          # max classical DWDM channels per edge
+CLASSICAL_SPACING_HZ: float = 50e9      # channel spacing [Hz] (50 GHz)
+CLASSICAL_BANDWIDTH_PER_CH_GBPS: float = 200.0  # data-rate per classical ch [Gb/s]
+CLASSICAL_POWER_PER_CH_W: float = 3.16e-6  # fibre launch power per ch [W] (−25 dBm)
+CLASSICAL_BASE_FREQ_HZ: float = 190.0e12  # lowest classical centre freq [Hz]
+QUANTUM_FREQ_HZ: float = 193.5e12       # quantum-channel centre frequency [Hz]
+QUANTUM_BANDWIDTH_GHZ: float = 25.0     # quantum receiver noise bandwidth [GHz]
 
 # ============================================================================
 # GNPy 92-point SSMF Raman gain coefficient table
@@ -416,48 +425,51 @@ def estimate_noise_photon_prob(
     num_classical_channels: Optional[int] = None,
     classical_power_per_ch_w: Optional[float] = None,
     classical_spacing_hz: Optional[float] = None,
+    classical_base_freq_hz: Optional[float] = None,
     quantum_freq_hz: Optional[float] = None,
     noise_bandwidth_hz: Optional[float] = None,
-    guard_band_hz: Optional[float] = None,
 ) -> float:
     """Estimate total noise photon-count probability per gate for a QKD link.
 
     Uses GNPy-aligned discrete FWM + SpRS with 92-point Raman table.
-    Classical channels are placed on one side of the quantum frequency
-    with a guard band.
+    Classical channels are placed at **low C-band frequencies** (first-fit,
+    lowest first) below the quantum channel.  The guard band is implicit:
+    ``f_quantum − f_classical_last`` grows when fewer channels are active.
 
     Parameters
     ----------
     distance_m : float
         Fibre span length [m].
     num_classical_channels : int, optional
-        Number of active classical DWDM channels.
+        Number of **active** classical DWDM channels (0 = dark fibre).
     classical_power_per_ch_w : float, optional
         Launch power per classical channel [W] (default −10 dBm).
     classical_spacing_hz : float, optional
         Classical channel spacing [Hz] (default 50 GHz).
+    classical_base_freq_hz : float, optional
+        Lowest classical channel centre frequency [Hz] (default 190.0 THz).
     quantum_freq_hz : float, optional
-        Quantum channel centre frequency [Hz] (default 193.4 THz).
+        Quantum channel centre frequency [Hz] (default 193.5 THz).
     noise_bandwidth_hz : float, optional
         Quantum receiver noise bandwidth [Hz] (default 25 GHz).
-    guard_band_hz : float, optional
-        Frequency gap Q ↔ nearest classical channel [Hz] (default 1 THz).
 
     Returns
     -------
     p_noise : float
         Noise photon-count probability per gate (dimensionless).
     """
-    N_ch = num_classical_channels or N_CLASSICAL_CHANNELS
+    N_ch = num_classical_channels if num_classical_channels is not None else 0
+    if N_ch <= 0:
+        return 0.0
+
     P_ch = classical_power_per_ch_w or CLASSICAL_POWER_PER_CH_W
     Δf = classical_spacing_hz or CLASSICAL_SPACING_HZ
     f_q = quantum_freq_hz or QUANTUM_FREQ_HZ
     B_noise = noise_bandwidth_hz or (QUANTUM_BANDWIDTH_GHZ * 1e9)
-    guard = guard_band_hz if guard_band_hz is not None else GUARD_BAND_HZ
+    f_base = classical_base_freq_hz or CLASSICAL_BASE_FREQ_HZ
 
-    # Classical channels on one side of quantum channel with guard band
-    f_first = f_q + guard
-    classical_freqs = [f_first + i * Δf for i in range(N_ch)]
+    # Classical channels: first-fit from low frequency upward
+    classical_freqs = [f_base + i * Δf for i in range(N_ch)]
 
     P_fwm = _compute_fwm_noise(distance_m, classical_freqs, P_ch, f_q)
     P_sprs = _compute_sprs_noise(distance_m, classical_freqs, P_ch, f_q, B_noise)
@@ -576,12 +588,12 @@ def infinite_key_rate(
 def get_key_capacity_kbps(
     distance_m: float,
     num_classical_channels: int = 0,
-    guard_band_hz: Optional[float] = None,
 ) -> float:
-    """Return QKD key capacity in kb/s.
+    """Return QKD key capacity in kb/s for a link of given length.
 
-    Defaults to dark-fibre (num_classical_channels=0).  Pass n>0 to
-    enable the GNPy-based FWM + SpRS noise model.
+    ``num_classical_channels`` is the number of **currently active**
+    classical channels on this link (0 = dark fibre).  When >0 the
+    GNPy-based FWM + SpRS noise model is engaged.
 
     Parameters
     ----------
@@ -589,21 +601,16 @@ def get_key_capacity_kbps(
         Fibre span length [m].
     num_classical_channels : int
         Active classical channels (0 = dark fibre).
-    guard_band_hz : float, optional
-        Guard band [Hz] (default 1 THz).
 
     Returns
     -------
     float
         Key capacity in kb/s (≥ 0).
     """
-    guard = guard_band_hz if guard_band_hz is not None else GUARD_BAND_HZ
-
     if num_classical_channels > 0:
         p_noise = estimate_noise_photon_prob(
             distance_m,
             num_classical_channels=num_classical_channels,
-            guard_band_hz=guard,
         )
     else:
         p_noise = 0.0

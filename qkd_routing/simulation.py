@@ -62,7 +62,7 @@ class SimulationRun:
 
         # Initialise fresh resources on the copied graph
         network = NetworkResources(
-            graph, self.classical_provider, self.qkd_provider
+            graph, self.classical_provider, self.qkd_provider, config
         )
 
         # Build event heap — one arrival + one departure per request

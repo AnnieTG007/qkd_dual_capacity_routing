@@ -278,7 +278,7 @@ def main():
     sample_edge = (0, 1)
     sample_dist = graph[0][1]["length_km"] * 1000.0
     print(f"       Edge (0,1): classical={classical_provider(sample_edge):.1f} Gbps, "
-          f"QKD={qkd_provider(sample_dist):.1f} kbps")
+          f"QKD(dark)={qkd_provider(sample_dist, 0):.1f} kbps")
 
     # 4. Run sweep
     print("[4/6] Running simulation sweep ...")

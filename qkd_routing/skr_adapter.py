@@ -7,13 +7,11 @@ Supported modes
     Zero external dependencies.  For quick testing only.
 
 ``actual_skr``
-    Self-contained approx-finite-key decoy-state BB84 with simplified
-    discrete FWM + SpRS noise model, implemented in ``physics.py``.
+    Self-contained approx-finite-key decoy-state BB84 with discrete
+    FWM + SpRS noise model, implemented in ``physics.py``.
+    Key capacity is **dynamic**: it depends on how many classical
+    WDM channels are currently active on the link.
     This is the **recommended mode for course-paper results**.
-
-    The noise depends on the number of classical channels active on a
-    link.  By default a fixed channel count (40 ch × 50 GHz) is used,
-    but it can be linked to the instantaneous classical utilisation.
 
     Usage::
 
@@ -33,8 +31,12 @@ def initialize_qkd_provider(
     mode: str,
     graph: nx.Graph,
     config: SimulationConfig,
-) -> Callable[[float], float]:
-    """Return a callable ``f(distance_m: float) -> key_capacity_kbps``."""
+) -> Callable[[float, int], float]:
+    """Return a callable ``f(distance_m, n_active_channels) -> key_capacity_kbps``.
+
+    The second argument ``n_active_channels`` is the number of classical
+    channels currently consuming bandwidth on the link (0 = dark fibre).
+    """
     if mode == "abstract":
         return _build_abstract_provider(config)
 
@@ -51,12 +53,12 @@ def initialize_qkd_provider(
 # Abstract (exponential-decay) provider
 # ---------------------------------------------------------------------------
 
-def _build_abstract_provider(config: SimulationConfig) -> Callable[[float], float]:
+def _build_abstract_provider(config: SimulationConfig) -> Callable[[float, int], float]:
     K0: float = config.abstract_K0_kbps
     alpha: float = config.abstract_alpha_per_km
 
-    def abstract_skr(distance_m: float) -> float:
-        """Exponential-decay key rate in kb/s."""
+    def abstract_skr(distance_m: float, _n_active: int = 0) -> float:
+        """Exponential-decay key rate in kb/s (ignores n_active)."""
         length_km = distance_m / 1000.0
         return K0 * math.exp(-alpha * length_km)
 
@@ -67,19 +69,24 @@ def _build_abstract_provider(config: SimulationConfig) -> Callable[[float], floa
 # Embedded SKR provider (physics.py)
 # ---------------------------------------------------------------------------
 
-def _build_embedded_skr_provider(config: SimulationConfig) -> Callable[[float], float]:
+def _build_embedded_skr_provider(config: SimulationConfig) -> Callable[[float, int], float]:
     """Use the self-contained finite-key decoy-state BB84 from physics.py.
 
-    Noise is computed with the simplified discrete FWM + SpRS model.
-    The number of classical channels is fixed at the default defined in
-    ``physics.N_CLASSICAL_CHANNELS`` (40 channels at 50 GHz spacing).
+    Key capacity is recomputed each time ``n_active`` changes.
+    Classical channels occupy low C-band (190.0 THz + i×50 GHz);
+    quantum sits at 193.5 THz ± 12.5 GHz.
     """
-    def actual_skr(distance_m: float) -> float:
-        """approx_finite_key_rate + FWM/SpRS noise → kbps."""
-        return physics.get_key_capacity_kbps(distance_m)
 
+    def actual_skr(distance_m: float, n_active: int) -> float:
+        """finite-key decoy BB84 + FWM/SpRS noise → kbps."""
+        return physics.get_key_capacity_kbps(
+            distance_m, num_classical_channels=n_active,
+        )
+
+    n_max = getattr(config, 'n_max_classical_channels', physics.N_CLASSICAL_CHANNELS)
     print(
-        "[skr_adapter] Using embedded approx_finite_key_rate "
-        "(finite-key decoy BB84 + simplified FWM/SpRS noise)"
+        "[skr_adapter] Dynamic embedded SKR provider "
+        f"(finite-key decoy BB84, {n_max} ch max, 50 GHz grid, "
+        f"first-fit from {physics.CLASSICAL_BASE_FREQ_HZ/1e12:.1f} THz)"
     )
     return actual_skr

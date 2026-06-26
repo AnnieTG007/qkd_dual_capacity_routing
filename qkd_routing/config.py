@@ -23,12 +23,15 @@ class SimulationConfig:
     # ---- Classical capacity mode ----
     classical_capacity_mode: str = "constant"
     # "constant" | "csv" | "gnpy_csv" | "gnpy_optional"
-    constant_classical_capacity_gbps: float = 400.0
+    constant_classical_capacity_gbps: float = 6400.0  # 32 ch × 200 Gbps
     classical_capacity_csv_path: Optional[str] = None
     gnpy_result_csv_path: Optional[str] = None
     # GSNR-to-capacity parameters (for gnpy_csv with GSNR data)
     gnpy_bandwidth_ghz: float = 75.0
     gnpy_osnr_margin_db: float = 3.0
+    # WDM channel model
+    n_max_classical_channels: int = 32        # max DWDM channels per edge
+    classical_bandwidth_per_ch_gbps: float = 200.0  # data-rate per channel
 
     # ---- QKD key capacity mode ----
     qkd_capacity_mode: str = "abstract"
@@ -39,7 +42,7 @@ class SimulationConfig:
 
     # ---- Traffic parameters ----
     load_values: List[float] = field(
-        default_factory=lambda: [20.0, 40.0, 60.0, 80.0, 100.0, 120.0, 140.0, 160.0]
+        default_factory=lambda: [50.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 800.0]
     )
     mean_holding_time: float = 1.0
     num_requests: int = 5000
