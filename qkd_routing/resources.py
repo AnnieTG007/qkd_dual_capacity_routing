@@ -193,6 +193,28 @@ class NetworkResources:
             return "classical_insufficient"
         return "key_insufficient"
 
+    # -- current total used (for time-weighted accumulation) ------------------
+    def get_total_used(self):
+        """Return (total_classical_used, total_key_used) summed over all edges."""
+        c_used = sum(e.classical_used for e in self._edges.values())
+        k_used = sum(e.key_used for e in self._edges.values())
+        return c_used, k_used
+
+    def get_total_capacity(self):
+        """Return (total_classical_capacity, total_key_capacity) summed over edges."""
+        c_total = sum(e.classical_total for e in self._edges.values())
+        k_total = sum(e.key_total for e in self._edges.values())
+        return c_total, k_total
+
+    def get_per_edge_utilization(self):
+        """Return two dicts: {edge: classical_util}, {edge: key_util}."""
+        c_util = {}
+        k_util = {}
+        for key, e in self._edges.items():
+            c_util[key] = e.classical_utilization
+            k_util[key] = e.key_utilization
+        return c_util, k_util
+
     # -- utilization snapshot ------------------------------------------------
     def get_avg_utilization(self):
         """Return (avg_classical_util, avg_key_util) across all edges."""

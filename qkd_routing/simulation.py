@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Tuple
 import networkx as nx
 
 from .config import SimulationConfig
+from .utils import EPS
 from .resources import NetworkResources
 from .routing import RoutingStrategy
 from .traffic import Request
@@ -94,9 +95,34 @@ class SimulationRun:
         total_hops: int = 0
         total_path_length_km: float = 0.0
 
+        # Time-weighted utilisation tracking
+        last_time: float = 0.0
+        integrated_c_used: float = 0.0  # ∫ classical_used(t) dt
+        integrated_k_used: float = 0.0  # ∫ key_used(t) dt
+        total_c_capacity: float = 0.0
+        total_k_capacity: float = 0.0
+        # Pre-fetch total capacities (constant over simulation)
+        total_c_capacity, total_k_capacity = network.get_total_capacity()
+        # Track per-edge peak utilisation
+        peak_c_util: float = 0.0
+        peak_k_util: float = 0.0
+
         # Process events in time order
         while events:
             event = heapq.heappop(events)
+
+            # ---- Accumulate time-weighted utilisation ----
+            delta = event.time - last_time
+            if delta > 0:
+                c_used_now, k_used_now = network.get_total_used()
+                integrated_c_used += c_used_now * delta
+                integrated_k_used += k_used_now * delta
+                # Track peak per-edge utilisation
+                if total_c_capacity > EPS:
+                    peak_c_util = max(peak_c_util, c_used_now / total_c_capacity)
+                if total_k_capacity > EPS:
+                    peak_k_util = max(peak_k_util, k_used_now / total_k_capacity)
+            last_time = event.time
 
             if event.event_type == "departure":
                 # Release resources for connections that are ending
@@ -148,6 +174,17 @@ class SimulationRun:
         if measured < 1:
             measured = 1
 
+        # Time-weighted average utilisation
+        sim_duration = last_time if last_time > 0 else 1.0
+        if sim_duration > 0 and total_c_capacity > EPS:
+            avg_c_util = (integrated_c_used / sim_duration) / total_c_capacity
+        else:
+            avg_c_util = 0.0
+        if sim_duration > 0 and total_k_capacity > EPS:
+            avg_k_util = (integrated_k_used / sim_duration) / total_k_capacity
+        else:
+            avg_k_util = 0.0
+
         # Per-type blocking rates
         classical_blocking_rate = (
             blocking_counts.get("classical_blocking", 0) / measured
@@ -166,10 +203,6 @@ class SimulationRun:
         avg_hops = total_hops / max(num_accepted, 1)
         avg_path_length_km = total_path_length_km / max(num_accepted, 1)
 
-        # Utilisation (snapshot at end of simulation)
-        avg_c_util, avg_k_util = network.get_avg_utilization()
-        max_c_util, max_k_util = network.get_max_utilization()
-
         return {
             "num_requests": measured,
             "num_accepted": num_accepted,
@@ -184,6 +217,6 @@ class SimulationRun:
             "avg_path_length_km": avg_path_length_km,
             "avg_classical_utilization": avg_c_util,
             "avg_key_utilization": avg_k_util,
-            "max_classical_utilization": max_c_util,
-            "max_key_utilization": max_k_util,
+            "max_classical_utilization": peak_c_util,
+            "max_key_utilization": peak_k_util,
         }
