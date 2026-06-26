@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      {
+        "tool": "Bash",
+        "description": "run the simulation with different configs"
+      },
+      {
+        "tool": "Bash",
+        "description": "test SKR function outputs"
+      },
+      {
+        "tool": "Bash",
+        "description": "install Python packages in venv"
+      },
+      {
+        "tool": "Bash",
+        "description": "git operations: commit, status, log, branch"
+      },
+      {
+        "tool": "Bash",
+        "description": "run Python scripts for testing"
+      },
+      {
+        "tool": "Bash",
+        "description": "create directories for project structure"
+      }
+    ]
+  }
+}
