@@ -518,9 +518,12 @@ class QKDWDMEnv(gym.Env):
             t += rng.exponential(1.0 / lam)
             if t > self.cfg.max_steps * self.cfg.mean_holding_time_s * 2:
                 break
-            # Random bw and key demand
+            # Random bw and key demand.
+            # 1 kbps is achievable on all 50-100 km RL edges even after
+            # adding several classical channels (dark-fiber SKR: 28 kbps @ 50 km,
+            # 2.4 kbps @ 100 km).  Higher demands would be infeasible everywhere.
             bw = self.cfg.classical_bandwidth_gbps
-            key = 100.0  # kbps
+            key = rng.uniform(0.5, 2.0)   # kbps, variable per request
             self._request_queue.append((bw, key))
 
     def _skr_for_edge(self, e: int) -> float:
@@ -564,6 +567,10 @@ class QKDWDMEnv(gym.Env):
         request = np.array([self.request_bw, self.request_key], dtype=np.float32)
         return np.concatenate([occ_flat, path_mask, quantum_pos, request])
 
+    def action_masks(self) -> np.ndarray:
+        """Required by sb3-contrib ActionMasker for MaskablePPO."""
+        return self._get_action_mask()
+
     def _get_action_mask(self) -> np.ndarray:
         """Build action mask: feasible wavelengths on the chosen path."""
         mask = np.ones(self.W, dtype=np.int8)
@@ -590,20 +597,71 @@ class QKDWDMEnv(gym.Env):
                     mask[w] = 0
                     break
 
-        # Also mask wavelengths that would kill SKR on any path edge
+        # Mask wavelengths that would drop SKR below the key demand on any path edge.
+        # _skr_for_edge returns bps; request_key is kbps → convert.
+        key_demand_bps = self.request_key * 1000.0
         for w in range(self.W):
             if mask[w] == 0:
                 continue
             for e in path_edges:
                 occ_before = self.occupancy[e, w]
                 self.occupancy[e, w] = 1.0
-                new_skr = self._skr_for_edge(e)   # only recompute this one edge
+                new_skr = self._skr_for_edge(e)
                 self.occupancy[e, w] = occ_before
-                if new_skr <= 0:
+                if new_skr < key_demand_bps:
                     mask[w] = 0
                     break
 
         return mask
+
+    def block_reason(self) -> str:
+        """Classify why all wavelengths are infeasible (call only when mask is all-zero).
+
+        Returns
+        -------
+        'classical'   – no free slot exists on path edges (classical capacity full)
+        'skr'         – free slots exist but adding any one would violate key demand
+        'mixed'       – both constraints contribute
+        """
+        if self.path_mask is None:
+            return "classical"
+
+        path_edges = np.where(self.path_mask > 0)[0]
+        q_slot = int(round(
+            (self.cfg.quantum_freq_hz - self.cfg.base_freq_hz)
+            / self.cfg.channel_spacing_hz
+        ))
+
+        occupancy_free = 0
+        skr_blocked = 0
+        key_demand_bps = self.request_key * 1000.0
+
+        for w in range(self.W):
+            # skip quantum guard band
+            if abs(w - q_slot) <= 1:
+                continue
+            # check occupancy
+            occ_ok = all(self.occupancy[e, w] == 0 for e in path_edges)
+            if not occ_ok:
+                continue
+            occupancy_free += 1
+            # check SKR
+            skr_ok = True
+            for e in path_edges:
+                self.occupancy[e, w] = 1.0
+                new_skr = self._skr_for_edge(e)
+                self.occupancy[e, w] = 0.0
+                if new_skr < key_demand_bps:
+                    skr_ok = False
+                    break
+            if not skr_ok:
+                skr_blocked += 1
+
+        if occupancy_free == 0:
+            return "classical"
+        if skr_blocked == occupancy_free:
+            return "skr"
+        return "mixed"
 
     def _random_path(self) -> np.ndarray:
         """Generate a random path mask for the current request.
@@ -632,7 +690,7 @@ class QKDWDMEnv(gym.Env):
         if self._request_queue:
             self.request_bw, self.request_key = self._request_queue.pop(0)
         else:
-            self.request_bw, self.request_key = 100.0, 100.0
+            self.request_bw, self.request_key = 100.0, 1.0
 
         self.path_mask = self._random_path()
 
@@ -679,22 +737,15 @@ class QKDWDMEnv(gym.Env):
         # Reward
         reward = compute_reward(
             accepted=feasible,
-            edge_skr_residual=self.edge_skr if feasible else None,
+            edge_skr_after=self.edge_skr if feasible else None,
             edge_skr_before=edge_skr_before if feasible else None,
-            assigned_wavelength_idx=action,
-            quantum_channel_indices=[
-                int(round((f_q - self.cfg.base_freq_hz) / self.cfg.channel_spacing_hz))
-                for f_q in self.quantum_freqs
-            ],
-            alpha=self.cfg.reward_alpha,
-            beta=self.cfg.reward_beta,
         )
 
         # Next request
         if self._request_queue:
             self.request_bw, self.request_key = self._request_queue.pop(0)
         else:
-            self.request_bw, self.request_key = 100.0, 100.0
+            self.request_bw, self.request_key = 100.0, 1.0
 
         self.path_mask = self._random_path()
 
@@ -702,7 +753,17 @@ class QKDWDMEnv(gym.Env):
         truncated = False
 
         obs = self._get_obs()
-        info = {"action_mask": self._get_action_mask()}
+        next_mask = self._get_action_mask()
+        info = {
+            "action_mask": next_mask,
+            "accepted": feasible,
+            # classical utilization: fraction of wavelength slots occupied across edges
+            "classical_util": float(np.mean(self.occupancy > 0)),
+            # aggregate SKR across all edges (bps)
+            "aggregate_skr": float(np.sum(self.edge_skr)),
+            # block reason (only meaningful when not feasible)
+            "block_reason": self.block_reason() if not feasible else "none",
+        }
 
         return obs, float(reward), terminated, truncated, info
 
