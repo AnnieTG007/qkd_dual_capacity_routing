@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import gymnasium as gym
+import networkx as nx
 import numpy as np
 
 from .reward import compute_reward
@@ -467,10 +468,31 @@ class QKDWDMEnv(gym.Env):
         self.cfg = self.config
 
         topo = self.cfg.topology
+        self.num_nodes = topo.num_nodes
         self.num_edges = len(topo.edges)
         self.edges = topo.edges
         self.edge_lengths_km = np.array(topo.edge_lengths_km, dtype=np.float64)
         self.W = self.cfg.num_wavelengths
+
+        # Build a routing graph so requests follow real (multi-edge) paths
+        # instead of random edge pairs.  Edge indices align with `self.edges`
+        # / `self.occupancy` rows so a path maps directly onto a path mask.
+        self.graph = nx.Graph()
+        self.graph.add_nodes_from(range(self.num_nodes))
+        self._edge_index: Dict[Tuple[int, int], int] = {}
+        for idx, (u, v) in enumerate(self.edges):
+            key = (min(u, v), max(u, v))
+            self._edge_index[key] = idx
+            self.graph.add_edge(u, v, length_km=float(self.edge_lengths_km[idx]))
+        # Pre-compute up to K shortest simple paths (by distance) per node pair.
+        self._k_candidates = 5
+        self._all_paths: Dict[Tuple[int, int], List[List[int]]] = {}
+        for s in range(self.num_nodes):
+            for d in range(self.num_nodes):
+                if s == d:
+                    continue
+                self._all_paths[(s, d)] = self._compute_k_paths(s, d, self._k_candidates)
+        self._node_pairs = [sd for sd, paths in self._all_paths.items() if paths]
 
         # Precompute quantum channel indices and frequencies
         # Quantum channels are placed symmetrically around quantum_freq_hz
@@ -500,6 +522,9 @@ class QKDWDMEnv(gym.Env):
         self.path_mask: Optional[np.ndarray] = None        # (|E|,)
         self.request_bw: float = 0.0
         self.request_key: float = 0.0
+        self.request_src: int = 0
+        self.request_dst: int = 0
+        self.current_path_nodes: List[int] = []
         self.step_count: int = 0
         self.np_random: np.random.Generator = np.random.default_rng(self.cfg.seed)
 
@@ -714,16 +739,49 @@ class QKDWDMEnv(gym.Env):
             return "skr"
         return "mixed"
 
-    def _random_path(self) -> np.ndarray:
-        """Generate a random path mask for the current request.
+    def _compute_k_paths(self, s: int, d: int, k: int) -> List[List[int]]:
+        """Up to ``k`` shortest simple paths (by fibre length) from ``s`` to ``d``."""
+        try:
+            gen = nx.shortest_simple_paths(self.graph, s, d, weight="length_km")
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return []
+        out: List[List[int]] = []
+        for path in gen:
+            out.append(path)
+            if len(out) >= k:
+                break
+        return out
 
-        Simplified: picks 2 random edges as a path.
-        """
+    def path_edge_indices(self, nodes: List[int]) -> List[int]:
+        """Edge indices traversed by a node-list path."""
+        idxs: List[int] = []
+        for a, b in zip(nodes[:-1], nodes[1:]):
+            idxs.append(self._edge_index[(min(a, b), max(a, b))])
+        return idxs
+
+    def path_to_mask(self, nodes: List[int]) -> np.ndarray:
+        """Convert a node-list path into an |E|-dim binary edge mask."""
         mask = np.zeros(self.num_edges, dtype=np.float32)
-        if self.num_edges >= 2:
-            indices = self.np_random.choice(self.num_edges, size=2, replace=False)
-            mask[indices] = 1.0
+        mask[self.path_edge_indices(nodes)] = 1.0
         return mask
+
+    def candidate_paths(self, s: int, d: int) -> List[List[int]]:
+        """Pre-computed K shortest candidate paths for a node pair."""
+        return self._all_paths.get((s, d), [])
+
+    def _random_path(self) -> np.ndarray:
+        """Sample a real path: a random source-destination pair, then one of
+        its K shortest candidate paths.  Edge indices align with the occupancy
+        rows, so the resulting mask is a genuine multi-edge lightpath."""
+        if not self._node_pairs:
+            return np.zeros(self.num_edges, dtype=np.float32)
+        pair_i = int(self.np_random.integers(len(self._node_pairs)))
+        s, d = self._node_pairs[pair_i]
+        self.request_src, self.request_dst = s, d
+        paths = self._all_paths[(s, d)]
+        nodes = paths[int(self.np_random.integers(len(paths)))]
+        self.current_path_nodes = nodes
+        return self.path_to_mask(nodes)
 
     # ── Gym API ──────────────────────────────────────────────────────────
 
