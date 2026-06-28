@@ -191,22 +191,36 @@ def _ci95(vals: List[float]) -> float:
 
 def plot_bar_comparison(results: Dict[str, List[EpisodeResult]]) -> None:
     names  = list(results.keys())
-    colors = {"DQN": "#4C72B0", "PPO": "#DD8452", "First-Fit": "#55A868"}
+    colors = {"DQN": "#4C72B0", "First-Fit": "#55A868"}
     c      = [colors.get(n, "#888888") for n in names]
     x      = np.arange(len(names))
-    w      = 0.55
+    w      = 0.45
 
-    fig, axes = plt.subplots(1, 4, figsize=(14, 4))
-    fig.suptitle("DQN vs PPO vs First-Fit  (30 eval episodes × 1000 steps)", fontsize=11)
+    fig, axes = plt.subplots(1, 3, figsize=(10, 4))
+    fig.suptitle("DQN vs First-Fit  (30 eval episodes × 1000 steps)", fontsize=11)
 
-    def _bar(ax, vals_by_name, ylabel, title, pct=False, higher_better=True):
+    def _bar(ax, vals_by_name, ylabel, title, higher_better=True, zoom=True):
         means = [np.mean(vals_by_name[n]) for n in names]
         errs  = [_ci95(vals_by_name[n]) for n in names]
-        bars  = ax.bar(x, means, w, color=c, yerr=errs, capsize=4,
-                       error_kw=dict(elinewidth=1.2))
-        ax.set_title(title, fontsize=9)
-        ax.set_ylabel(ylabel, fontsize=8)
-        ax.set_xticks(x); ax.set_xticklabels(names, fontsize=8)
+        bars  = ax.bar(x, means, w, color=c, yerr=errs, capsize=5,
+                       error_kw=dict(elinewidth=1.5))
+        ax.set_title(title, fontsize=10, fontweight="bold")
+        ax.set_ylabel(ylabel, fontsize=9)
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, fontsize=9)
+        ax.grid(axis="y", alpha=0.3, linestyle="--")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        # Zoom y-axis to show differences: floor at 80% of min value
+        if zoom and min(means) > 0:
+            ymin = min(m - e for m, e in zip(means, errs)) * 0.94
+            ymax = max(m + e for m, e in zip(means, errs)) * 1.12
+            ax.set_ylim(ymin, ymax)
+        # Annotate absolute value on each bar
+        for i, (m, e) in enumerate(zip(means, errs)):
+            ax.text(i, m + e + (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.01,
+                    f"{m:.3f}" if m < 10 else f"{m:.0f}",
+                    ha="center", va="bottom", fontsize=8, fontweight="bold")
         # Annotate relative improvement vs First-Fit
         if "First-Fit" in names:
             ff_mean = means[names.index("First-Fit")]
@@ -216,9 +230,11 @@ def plot_bar_comparison(results: Dict[str, List[EpisodeResult]]) -> None:
                 rel = (m - ff_mean) / abs(ff_mean) * 100
                 sign = "+" if rel > 0 else ""
                 col  = "green" if (rel > 0) == higher_better else "red"
-                ax.text(i, m + errs[i] + abs(m) * 0.02,
-                        f"{sign}{rel:.1f}%", ha="center", va="bottom",
-                        fontsize=7, color=col, fontweight="bold")
+                yrange = ax.get_ylim()[1] - ax.get_ylim()[0]
+                ax.text(i, ax.get_ylim()[1] - yrange * 0.05,
+                        f"{sign}{rel:.1f}%", ha="center", va="top",
+                        fontsize=9, color=col, fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7))
         return bars
 
     # 1. Blocking rate
@@ -226,20 +242,15 @@ def plot_bar_comparison(results: Dict[str, List[EpisodeResult]]) -> None:
          {n: [r.blocking_rate for r in results[n]] for n in names},
          "Blocking Rate", "Blocking Rate", higher_better=False)
 
-    # 2. Classical utilisation
+    # 2. Avg aggregate SKR
     _bar(axes[1],
-         {n: [r.mean_classical_util * 100 for r in results[n]] for n in names},
-         "Utilisation (%)", "Classical Utilisation")
-
-    # 3. Avg aggregate SKR
-    _bar(axes[2],
          {n: [r.mean_skr_kbps for r in results[n]] for n in names},
          "Agg. SKR (kbps)", "Mean Aggregate SKR")
 
-    # 4. Episode reward
-    _bar(axes[3],
+    # 3. Episode reward
+    _bar(axes[2],
          {n: [r.cumulative_reward for r in results[n]] for n in names},
-         "Cumul. Reward", "Episode Reward")
+         "Cumul. Reward", "Episode Reward", zoom=False)
 
     plt.tight_layout()
     out = _RESULTS_DIR / "eval_rl_bars.png"
@@ -248,37 +259,50 @@ def plot_bar_comparison(results: Dict[str, List[EpisodeResult]]) -> None:
     plt.close(fig)
 
 
+def _ema(x: np.ndarray, alpha: float = 0.3) -> np.ndarray:
+    """Exponential moving average for smoothing noisy reward curves."""
+    out = np.empty_like(x)
+    out[0] = x[0]
+    for i in range(1, len(x)):
+        out[i] = alpha * x[i] + (1 - alpha) * out[i - 1]
+    return out
+
+
 def plot_training_curves() -> None:
-    """Plot eval reward curves from SB3 EvalCallback evaluations.npz logs."""
-    sources = {
-        "DQN":  _DQN_LOG_DIR / "evaluations.npz",
-        "PPO":  _PPO_LOG_DIR / "evaluations.npz",
-    }
-    colors = {"DQN": "#4C72B0", "PPO": "#DD8452"}
+    """Plot DQN training reward curve from SB3 EvalCallback evaluations.npz."""
+    dqn_path = _DQN_LOG_DIR / "evaluations.npz"
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    found_any = False
-    for label, path in sources.items():
-        if not path.exists():
-            continue
-        data = np.load(str(path))
+
+    if dqn_path.exists():
+        data    = np.load(str(dqn_path))
         steps   = data["timesteps"]
         rewards = data["results"]          # shape (n_evals, n_episodes)
         mean_r  = rewards.mean(axis=1)
         std_r   = rewards.std(axis=1)
-        ax.plot(steps, mean_r, label=label, color=colors[label], linewidth=1.8)
-        ax.fill_between(steps, mean_r - std_r, mean_r + std_r,
-                        alpha=0.18, color=colors[label])
-        found_any = True
+        smooth  = _ema(mean_r, alpha=0.35)
 
-    if not found_any:
-        ax.text(0.5, 0.5, "No evaluations.npz found yet.\nTrain DQN/PPO first.",
+        # Raw variance band
+        ax.fill_between(steps, mean_r - std_r, mean_r + std_r,
+                        alpha=0.15, color="#4C72B0", label="_nolegend_")
+        # Raw mean (faint)
+        ax.plot(steps, mean_r, color="#4C72B0", linewidth=0.9,
+                alpha=0.45, label="Raw eval reward")
+        # Smoothed trend
+        ax.plot(steps, smooth, color="#4C72B0", linewidth=2.2,
+                label="DQN (EMA smoothed)")
+        # First-Fit baseline
+        ax.axhline(825, color="#55A868", linewidth=1.5,
+                   linestyle="--", label="First-Fit baseline")
+        ax.set_xlim(steps[0], steps[-1])
+    else:
+        ax.text(0.5, 0.5, "No evaluations.npz found.\nTrain DQN first.",
                 ha="center", va="center", transform=ax.transAxes,
                 fontsize=11, color="gray", style="italic")
 
     ax.set_xlabel("Training Steps", fontsize=10)
     ax.set_ylabel("Mean Episode Reward", fontsize=10)
-    ax.set_title("Training Reward Curves: PPO vs DQN", fontsize=11)
+    ax.set_title("DQN Training Reward Curve", fontsize=11)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
     plt.tight_layout()

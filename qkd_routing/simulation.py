@@ -79,8 +79,8 @@ class SimulationRun:
             r.request_id: r for r in self.requests
         }
 
-        # Active connections: request_id → path
-        active_connections: Dict[int, List[int]] = {}
+        # Active connections: request_id → (path, wavelengths_list)
+        active_connections: Dict[int, Tuple[List[int], List[int]]] = {}
 
         # ---- Statistics (only counted for arrivals >= warmup_count) ----
         arrivals_seen: int = 0  # total arrivals processed so far
@@ -91,6 +91,7 @@ class SimulationRun:
             "key_blocking": 0,
             "joint_blocking": 0,
             "topology_blocking": 0,
+            "wavelength_blocking": 0,
         }
         total_hops: int = 0
         total_path_length_km: float = 0.0
@@ -128,10 +129,8 @@ class SimulationRun:
                 # Release resources for connections that are ending
                 if event.request_id in active_connections:
                     req = request_map[event.request_id]
-                    path = active_connections.pop(event.request_id)
-                    network.release_path(
-                        path, req.bandwidth_gbps, req.key_rate_kbps
-                    )
+                    path, wavelengths = active_connections.pop(event.request_id)
+                    network.release_path(path, wavelengths, req.key_rate_kbps)
                 continue
 
             # ---- Arrival event ----
@@ -148,11 +147,21 @@ class SimulationRun:
             )
 
             if path is not None:
-                # Success — allocate resources and track the connection
-                network.allocate_path(
-                    path, req.bandwidth_gbps, req.key_rate_kbps
-                )
-                active_connections[req.request_id] = path
+                # Find wavelengths satisfying continuity constraint (First-Fit)
+                import math as _math
+                bw_per_ch = getattr(config, 'classical_bandwidth_per_ch_gbps', 100.0)
+                n_slots = max(1, _math.ceil(req.bandwidth_gbps / bw_per_ch))
+                wavelengths = network.find_free_wavelengths(path, n_slots)
+                if wavelengths is None:
+                    # Wavelength continuity blocking (should be rare if routing checked)
+                    if in_measurement:
+                        num_blocked += 1
+                        blocking_counts["wavelength_blocking"] = (
+                            blocking_counts.get("wavelength_blocking", 0) + 1
+                        )
+                    continue
+                network.allocate_path(path, wavelengths, req.key_rate_kbps)
+                active_connections[req.request_id] = (path, wavelengths)
 
                 if in_measurement:
                     num_accepted += 1
@@ -198,6 +207,9 @@ class SimulationRun:
         topology_blocking_rate = (
             blocking_counts.get("topology_blocking", 0) / measured
         )
+        wavelength_blocking_rate = (
+            blocking_counts.get("wavelength_blocking", 0) / measured
+        )
 
         # Path stats
         avg_hops = total_hops / max(num_accepted, 1)
@@ -212,6 +224,7 @@ class SimulationRun:
             "key_blocking_rate": key_blocking_rate,
             "joint_blocking_rate": joint_blocking_rate,
             "topology_blocking_rate": topology_blocking_rate,
+            "wavelength_blocking_rate": wavelength_blocking_rate,
             "blocking_counts": dict(blocking_counts),
             "avg_hops": avg_hops,
             "avg_path_length_km": avg_path_length_km,

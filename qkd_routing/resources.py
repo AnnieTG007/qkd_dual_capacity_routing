@@ -1,29 +1,26 @@
-"""Per-edge dual-capacity resource tracking with dynamic QKD-key capacity.
+"""Per-edge dual-capacity resource tracking with wavelength continuity.
 
-Manages two scalar resources on every undirected edge:
-
-* ``classical_capacity_gbps``  — classical communication bandwidth (Gb/s)
-* ``key_capacity_kbps``         — QKD secret-key rate (kb/s), **dynamic**
-
-Key capacity depends on the number of *active* classical channels on the
-link because each co-propagating channel contributes FWM + SpRS noise.
-Channels are first-fit from low frequency upward: the N-th channel becomes
-active once ``classical_used > (N-1) × bandwidth_per_ch``.
+Each edge tracks:
+* ``slots_occupied``  — set of wavelength slot indices in use (wavelength continuity)
+* ``key_used``        — QKD key consumed (kbps), dynamic total from SKR model
 """
 
 import math
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
+
+def _n_slots_for(bandwidth_gbps: float, bw_per_ch: float) -> int:
+    """Number of wavelength slots needed for ``bandwidth_gbps`` demand."""
+    return max(1, math.ceil(bandwidth_gbps / max(bw_per_ch, 1e-9)))
 
 from .utils import EPS, canonical_edge
 
 
 class EdgeResources:
-    """Track classical + QKD key capacity on one undirected link.
+    """Track wavelength slot occupancy + QKD key capacity on one undirected link.
 
-    Classical capacity is divided into ``n_max`` channels of
-    ``bandwidth_per_ch_gbps`` each (50 GHz WDM grid).  As classical
-    utilisation grows, more channels become active and the QKD key
-    rate is recomputed on the fly.
+    Classical capacity is divided into ``n_max`` discrete wavelength slots.
+    Each slot carries ``bandwidth_per_ch_gbps`` Gbps.  The QKD key rate is
+    recomputed whenever the number of active (occupied) slots changes.
     """
 
     def __init__(
@@ -34,27 +31,13 @@ class EdgeResources:
         bandwidth_per_ch_gbps: float,
         skr_provider: Callable[[float, int], float],
     ):
-        """
-        Parameters
-        ----------
-        edge : (u, v)
-            Canonical undirected edge tuple.
-        distance_m : float
-            Fibre span length [m] — used for SKR computation.
-        n_max_channels : int
-            Maximum number of classical DWDM channels on this link.
-        bandwidth_per_ch_gbps : float
-            Data-rate per classical channel [Gb/s] (e.g. 200).
-        skr_provider : callable
-            ``f(distance_m, n_active_channels) -> key_capacity_kbps``.
-        """
         self.edge = edge
         self.distance_m = distance_m
         self.n_max = n_max_channels
         self.bandwidth_per_ch = bandwidth_per_ch_gbps
         self.classical_total: float = n_max_channels * bandwidth_per_ch_gbps
 
-        self.classical_used: float = 0.0
+        self.slots_occupied: Set[int] = set()   # occupied wavelength indices
         self.key_used: float = 0.0
 
         self._skr_provider = skr_provider
@@ -62,20 +45,28 @@ class EdgeResources:
         self._key_total: float = skr_provider(distance_m, 0)
 
     # ------------------------------------------------------------------
-    # Active classical channel count
+    # Slot / bandwidth helpers
     # ------------------------------------------------------------------
-
-    def _n_active_for(self, classical_used: float) -> int:
-        """Number of active channels for a given classical-usage level."""
-        if classical_used <= 0.0:
-            return 0
-        return min(self.n_max, max(0, math.ceil(classical_used / self.bandwidth_per_ch)))
 
     def _n_active(self) -> int:
-        return self._n_active_for(self.classical_used)
+        return len(self.slots_occupied)
+
+    def slots_free(self) -> int:
+        return self.n_max - len(self.slots_occupied)
+
+    def is_slot_free(self, w: int) -> bool:
+        return w not in self.slots_occupied
+
+    @property
+    def classical_used(self) -> float:
+        return len(self.slots_occupied) * self.bandwidth_per_ch
+
+    @property
+    def classical_residual(self) -> float:
+        return self.slots_free() * self.bandwidth_per_ch
 
     # ------------------------------------------------------------------
-    # Key capacity (dynamic)
+    # Key capacity (dynamic — recalculated when n_active changes)
     # ------------------------------------------------------------------
 
     @property
@@ -83,90 +74,65 @@ class EdgeResources:
         return self._key_total
 
     def _update_key_total(self):
-        """Recompute key capacity if the active channel count changed."""
-        n = self._n_active()
+        n = len(self.slots_occupied)
         if n != self._cached_n_active:
             self._cached_n_active = n
             self._key_total = self._skr_provider(self.distance_m, n)
 
-    def _future_key_total(self, additional_classical: float) -> float:
-        """Key capacity **after** allocating *additional_classical* Gb/s."""
-        future_used = self.classical_used + additional_classical
-        future_n = self._n_active_for(future_used)
+    def _future_key_total(self, extra_slots: int = 1) -> float:
+        """Key capacity after hypothetically adding ``extra_slots`` channels."""
+        future_n = min(len(self.slots_occupied) + extra_slots, self.n_max)
         if future_n == self._cached_n_active:
-            return self._key_total  # no recomputation needed
+            return self._key_total
         return self._skr_provider(self.distance_m, future_n)
-
-    # ------------------------------------------------------------------
-    # Residual properties
-    # ------------------------------------------------------------------
-
-    @property
-    def classical_residual(self) -> float:
-        return self.classical_total - self.classical_used
 
     @property
     def key_residual(self) -> float:
         return self._key_total - self.key_used
 
     # ------------------------------------------------------------------
-    # Capacity checks
+    # Feasibility checks
     # ------------------------------------------------------------------
 
-    def can_accommodate(
-        self,
-        classical_demand_gbps: float,
-        key_demand_kbps: float,
-    ) -> bool:
-        """Check if **both** resources suffice.
-
-        Key capacity is evaluated at the *future* active channel count
-        (i.e. after the classical demand is hypothetically allocated).
-        """
-        # Classical check
-        if self.classical_residual < classical_demand_gbps - EPS:
+    def is_slot_feasible(self, w: int, key_demand: float) -> bool:
+        """True if slot w is free AND key capacity will hold after allocation."""
+        if not self.is_slot_free(w) or w >= self.n_max:
             return False
-        # Key check — use future n_active
-        future_key_cap = self._future_key_total(classical_demand_gbps)
-        return future_key_cap - self.key_used - key_demand_kbps >= -EPS
+        future_key = self._future_key_total(1)
+        return future_key - self.key_used - key_demand >= -EPS
 
-    def classical_ok(self, classical_demand_gbps: float) -> bool:
-        """Check classical capacity only (at current n_active)."""
-        return self.classical_residual >= classical_demand_gbps - EPS
+    def can_accommodate(self, classical_demand_gbps: float, key_demand_kbps: float,
+                        bw_per_ch: float = 100.0) -> bool:
+        """True if enough free slots exist AND key capacity is sufficient."""
+        n = _n_slots_for(classical_demand_gbps, bw_per_ch)
+        if self.slots_free() < n:
+            return False
+        future_key = self._future_key_total(n)
+        return future_key - self.key_used - key_demand_kbps >= -EPS
+
+    def classical_ok(self, classical_demand_gbps: float, bw_per_ch: float = 100.0) -> bool:
+        """True if enough wavelength slots are free for the bandwidth demand."""
+        return self.slots_free() >= _n_slots_for(classical_demand_gbps, bw_per_ch)
 
     def key_ok(self, key_demand_kbps: float) -> bool:
-        """Check key capacity only (at current n_active)."""
         return self.key_residual >= key_demand_kbps - EPS
 
     # ------------------------------------------------------------------
-    # Allocate / release
+    # Allocate / release (slot-aware)
     # ------------------------------------------------------------------
 
-    def allocate(self, classical_demand_gbps: float, key_demand_kbps: float):
-        """Deduct resources.  Caller must have checked feasibility."""
-        self.classical_used += classical_demand_gbps
-        self.key_used += key_demand_kbps
+    def allocate(self, wavelengths: List[int], key_demand: float):
+        """Occupy wavelength slots and deduct key capacity."""
+        for w in wavelengths:
+            self.slots_occupied.add(w)
+        self.key_used += key_demand
         self._update_key_total()
-        # Sanity checks
-        if self.classical_used > self.classical_total + EPS:
-            raise RuntimeError(
-                f"Edge {self.edge}: classical over-allocated "
-                f"(used={self.classical_used:.4f}, total={self.classical_total})"
-            )
-        if self.key_used > self._key_total + EPS:
-            raise RuntimeError(
-                f"Edge {self.edge}: key over-allocated "
-                f"(used={self.key_used:.4f}, total={self._key_total:.4f}, "
-                f"n_active={self._cached_n_active})"
-            )
 
-    def release(self, classical_demand_gbps: float, key_demand_kbps: float):
-        """Return resources."""
-        self.classical_used -= classical_demand_gbps
-        self.key_used -= key_demand_kbps
-        # Clamp tiny negatives from float rounding
-        if self.classical_used < 0.0:
-            self.classical_used = 0.0
+    def release(self, wavelengths: List[int], key_demand: float):
+        """Free wavelength slots and return key capacity."""
+        for w in wavelengths:
+            self.slots_occupied.discard(w)
+        self.key_used -= key_demand
         if self.key_used < 0.0:
             self.key_used = 0.0
         self._update_key_total()
@@ -177,9 +143,7 @@ class EdgeResources:
 
     @property
     def classical_utilization(self) -> float:
-        if self.classical_total < EPS:
-            return 0.0
-        return self.classical_used / self.classical_total
+        return len(self.slots_occupied) / max(self.n_max, 1)
 
     @property
     def key_utilization(self) -> float:
@@ -195,31 +159,13 @@ class NetworkResources:
     """
 
     def __init__(self, graph, classical_provider, qkd_provider, config):
-        """
-        Parameters
-        ----------
-        graph : nx.Graph
-            Topology with ``length_km`` on each edge.
-        classical_provider : callable
-            ``f(edge_tuple) -> classical_capacity_gbps``
-            (still used for non-dynamic classical modes like csv).
-        qkd_provider : callable
-            ``f(distance_m, n_active) -> key_capacity_kbps``
-            Signature changed: now accepts n_active as 2nd arg.
-        config : SimulationConfig
-            Provides n_max_classical_channels and bandwidth_per_ch.
-        """
         self._edges: Dict[Tuple[int, int], EdgeResources] = {}
-        self._n_max = getattr(config, 'n_max_classical_channels', 32)
-        self._bw_per_ch = getattr(config, 'classical_bandwidth_per_ch_gbps', 200.0)
+        self._n_max = getattr(config, 'n_max_classical_channels', 8)
+        self._bw_per_ch = getattr(config, 'classical_bandwidth_per_ch_gbps', 100.0)
 
         for u, v, data in graph.edges(data=True):
             key = canonical_edge(u, v)
-            length_km = data.get("length_km", 0.0)
-            distance_m = length_km * 1000.0
-
-            # Classical total capacity (overrideable via provider for csv modes)
-            classical_cap = classical_provider(key)
+            distance_m = data.get("length_km", 0.0) * 1000.0
             edge_res = EdgeResources(
                 edge=key,
                 distance_m=distance_m,
@@ -227,7 +173,8 @@ class NetworkResources:
                 bandwidth_per_ch_gbps=self._bw_per_ch,
                 skr_provider=qkd_provider,
             )
-            # Override total if provider gave a different value
+            # Allow classical_provider override (csv modes)
+            classical_cap = classical_provider(key)
             if abs(classical_cap - edge_res.classical_total) > EPS:
                 edge_res.classical_total = classical_cap
             self._edges[key] = edge_res
@@ -240,99 +187,118 @@ class NetworkResources:
         return self._edges[canonical_edge(u, v)]
 
     # ------------------------------------------------------------------
+    # Wavelength continuity
+    # ------------------------------------------------------------------
+
+    def find_free_wavelengths(
+        self, path: List[int], n_slots: int
+    ) -> Optional[List[int]]:
+        """First-Fit: return the first ``n_slots`` wavelength indices all free
+        on ALL edges of path (each sub-channel satisfies wavelength continuity).
+
+        Slots need not be contiguous — each 100-Gbps lightpath sub-channel uses
+        an independent wavelength on the same physical path.
+        Returns None if fewer than ``n_slots`` common free wavelengths exist.
+        """
+        free: List[int] = []
+        for w in range(self._n_max):
+            if all(
+                self.get_edge(path[i], path[i + 1]).is_slot_free(w)
+                for i in range(len(path) - 1)
+            ):
+                free.append(w)
+                if len(free) == n_slots:
+                    return free
+        return None
+
+    # ------------------------------------------------------------------
     # Path-level operations
     # ------------------------------------------------------------------
 
     def can_allocate_path(
         self, path: List[int], classical_demand: float, key_demand: float
     ) -> bool:
-        """True if every edge on *path* has sufficient residual capacity."""
+        """True if every edge has sufficient capacity AND enough common free
+        wavelengths exist to carry ``classical_demand`` Gbps."""
+        n_slots = _n_slots_for(classical_demand, self._bw_per_ch)
         for i in range(len(path) - 1):
             edge = self.get_edge(path[i], path[i + 1])
-            if not edge.can_accommodate(classical_demand, key_demand):
+            if not edge.can_accommodate(classical_demand, key_demand, self._bw_per_ch):
                 return False
-        return True
+        return self.find_free_wavelengths(path, n_slots) is not None
 
     def allocate_path(
-        self, path: List[int], classical_demand: float, key_demand: float
+        self, path: List[int], wavelengths: List[int], key_demand: float
     ):
-        """Deduct resources along *path*.  Call after feasibility check."""
+        """Occupy ``wavelengths`` on every edge of path and deduct key capacity."""
         for i in range(len(path) - 1):
-            edge = self.get_edge(path[i], path[i + 1])
-            edge.allocate(classical_demand, key_demand)
+            self.get_edge(path[i], path[i + 1]).allocate(wavelengths, key_demand)
 
     def release_path(
-        self, path: List[int], classical_demand: float, key_demand: float
+        self, path: List[int], wavelengths: List[int], key_demand: float
     ):
-        """Return resources along *path*."""
+        """Release ``wavelengths`` on every edge of path and restore key capacity."""
         for i in range(len(path) - 1):
-            edge = self.get_edge(path[i], path[i + 1])
-            edge.release(classical_demand, key_demand)
+            self.get_edge(path[i], path[i + 1]).release(wavelengths, key_demand)
 
     # ------------------------------------------------------------------
-    # Path feasibility classification (used by routing)
+    # Feasibility classification (used for blocking-reason reporting)
     # ------------------------------------------------------------------
 
     def classify_path_feasibility(
         self, path: List[int], classical_demand: float, key_demand: float
     ) -> str:
-        """Classify a single path w.r.t. dual-capacity constraints.
+        """Classify a single path w.r.t. dual-capacity + wavelength continuity.
 
         Returns one of:
             'feasible'
+            'wavelength_blocking'   — capacity OK but no common free slots
             'classical_insufficient'
             'key_insufficient'
             'joint_insufficient'
         """
+        n_slots = _n_slots_for(classical_demand, self._bw_per_ch)
         classical_ok = True
         key_ok = True
         for i in range(len(path) - 1):
             edge = self.get_edge(path[i], path[i + 1])
-            if not edge.classical_ok(classical_demand):
+            if not edge.classical_ok(classical_demand, self._bw_per_ch):
                 classical_ok = False
-            # Key check: use future n_active (after classical allocation)
-            future_key_cap = edge._future_key_total(classical_demand)
-            if future_key_cap - edge.key_used - key_demand < -EPS:
+            future_key = edge._future_key_total(n_slots)
+            if future_key - edge.key_used - key_demand < -EPS:
                 key_ok = False
             if not classical_ok and not key_ok:
                 break
 
-        if classical_ok and key_ok:
-            return "feasible"
         if not classical_ok and not key_ok:
             return "joint_insufficient"
         if not classical_ok:
             return "classical_insufficient"
-        return "key_insufficient"
+        if not key_ok:
+            return "key_insufficient"
+        # Both per-edge checks pass; now check wavelength continuity
+        if self.find_free_wavelengths(path, n_slots) is None:
+            return "wavelength_blocking"
+        return "feasible"
 
     # ------------------------------------------------------------------
-    # Current total used (for time-weighted accumulation)
+    # Aggregate metrics
     # ------------------------------------------------------------------
 
     def get_total_used(self):
-        """Return (total_classical_used, total_key_used) summed over all edges."""
         c_used = sum(e.classical_used for e in self._edges.values())
         k_used = sum(e.key_used for e in self._edges.values())
         return c_used, k_used
 
     def get_total_capacity(self):
-        """Return (total_classical_capacity, total_key_capacity) summed over edges."""
         c_total = sum(e.classical_total for e in self._edges.values())
         k_total = sum(e.key_total for e in self._edges.values())
         return c_total, k_total
 
     def get_per_edge_utilization(self):
-        """Return two dicts: {edge: classical_util}, {edge: key_util}."""
-        c_util = {}
-        k_util = {}
-        for key, e in self._edges.items():
-            c_util[key] = e.classical_utilization
-            k_util[key] = e.key_utilization
+        c_util = {key: e.classical_utilization for key, e in self._edges.items()}
+        k_util = {key: e.key_utilization for key, e in self._edges.items()}
         return c_util, k_util
-
-    # ------------------------------------------------------------------
-    # Iterate
-    # ------------------------------------------------------------------
 
     def items(self):
         return self._edges.items()

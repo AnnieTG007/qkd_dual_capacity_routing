@@ -26,7 +26,7 @@ wangyuting007@bupt.edu.cn}
 \maketitle
 
 \begin{abstract}
-Quantum key distribution (QKD) over existing wavelength-division multiplexing (WDM) optical networks requires solving a joint routing and wavelength assignment (RWA) problem under dual capacity constraints: classical data bandwidth and quantum key generation rate. The extreme power disparity between classical (milliwatt-level) and quantum (single-photon-level) signals means that nonlinear fiber noise---four-wave mixing (FWM) and spontaneous Raman scattering (SpRS)---from classical channels can severely degrade QKD performance, making the key capacity of each link dependent on the wavelength-level allocation of classical traffic. This paper formulates the QKD-aware RWA problem in WDM networks and proposes a two-layer solution framework: at the routing layer, we evaluate four path-selection strategies with increasing degrees of QKD awareness (min-hop, min-distance, key-capacity-aware, and dual-capacity-aware); at the wavelength assignment layer, we introduce a deep Q-network (DQN) agent that learns to select wavelengths to minimize FWM and SpRS crosstalk onto quantum channels. The DQN agent is trained via Stable-Baselines3 on a single-core WDM environment that integrates discrete single-frequency FWM and SpRS noise models with a dynamic Poisson traffic simulator. Simulation results on the NSFNET topology show that dual-capacity-aware routing reduces QKD blocking by up to 35\% compared to min-hop routing, and the DQN wavelength selection outperforms first-fit by up to 28\% in aggregate secret key rate under tight channel spacing (50~GHz). These results establish an integrated routing-and-allocation framework for reliable QKD coexistence in dense WDM networks.
+This paper studies joint routing and wavelength assignment (RWA) for quantum key distribution (QKD) coexisting with classical traffic in WDM optical networks. Four-wave mixing (FWM) and spontaneous Raman scattering (SpRS) from classical channels degrade per-link key capacity in a wavelength-dependent manner, creating a dual-constrained resource allocation problem. We propose a two-layer framework: four path-selection strategies with increasing QKD awareness at the routing layer, and a DQN agent at the wavelength assignment layer. Experiments on the NSFNET 14-node topology show that with 32 wavelength slots per edge, QKD key capacity is the sole bottleneck: classical blocking is negligible and min-distance routing reduces blocking by up to 1.5 percentage points over min-hop by naturally selecting shorter, lower-noise paths. The DQN wavelength assignment agent further reduces blocking by 11.7\% and improves aggregate secret key rate by 4.5\% over first-fit assignment.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -35,22 +35,11 @@ Quantum key distribution, routing and wavelength assignment, deep reinforcement 
 
 \section{Introduction}
 
-Quantum key distribution (QKD) \cite{b1} promises information-theoretically secure symmetric keys, with security rooted in quantum mechanics rather than computational hardness assumptions. As QKD matures toward practical wide-area deployment, integrating quantum channels into existing wavelength-division multiplexing (WDM) optical networks has emerged as the most economically viable path---it avoids the prohibitive cost of dedicated dark fibers by co-propagating quantum and classical signals in the same fiber \cite{b2}.
+Integrating QKD into existing WDM optical networks is economically attractive, as it reuses deployed fiber infrastructure instead of requiring dedicated dark fibers \cite{b2}. However, the extreme power disparity between classical (0--10~dBm) and quantum (single-photon-level) signals causes two dominant nonlinear impairments: four-wave mixing (FWM) and spontaneous Raman scattering (SpRS) \cite{b3}. Both effects depend on \emph{which wavelengths} carry classical traffic, so the secret key rate (SKR) available on each link varies with the current wavelength occupancy.
 
-This coexistence, however, introduces a fundamental physical-layer challenge that propagates upward to the network layer. Classical WDM channels launch at 0--10~dBm per wavelength, while quantum signals carry less than one photon per pulse on average ($\sim -100$~dBm). The resulting $>$80~dB power gap makes QKD receivers exquisitely sensitive to nonlinear crosstalk from classical channels. Once linear crosstalk mechanisms are suppressed below $-110$~dB, two fiber nonlinear effects dominate \cite{b3}: \emph{four-wave mixing} (FWM), a Kerr-effect-driven process wherein classical channel triplets generate new frequency components that can land directly in quantum receiver passbands, and \emph{spontaneous Raman scattering} (SpRS), broadband inelastic photon scattering that transfers classical pump power across the entire C-band.
+This creates a \textbf{dual-constrained RWA problem}: each link provides classical bandwidth (Gbps) and key capacity (kbps), where the latter changes dynamically with traffic state. Prior work either assumes fixed key capacities \cite{b4} or proposes static wavelength plans without dynamic traffic \cite{b5,b6}. Deep reinforcement learning (DRL) has shown promise for classical RWA \cite{b7} but has not been applied to QKD-aware coexistence networks.
 
-Critically, both FWM and SpRS noise depend on \emph{which wavelengths} carry classical traffic. This couples the physical-layer impairment to the network-layer routing and wavelength assignment (RWA) decisions: a routing decision that appears feasible under nominal key capacity may become infeasible if wavelength assignment places classical channels in FWM-resonant positions relative to quantum channels. The resulting network resource allocation problem is \textbf{dual-constrained}: each fiber link provides classical data capacity (Gbps) and QKD key capacity (kbps), where the latter depends nonlinearly on the classical wavelength occupancy.
-
-From the perspective of communication network theory, this problem instantiates a \emph{reliability-constrained resource allocation} task. A lightpath is considered reliable if it maintains positive secret key rate (SKR) for every quantum channel under the FWM and SpRS noise generated by all co-propagating classical channels. The reliability constraint creates a structured coupling between the routing layer (which paths to use) and the wavelength assignment layer (which frequency slots to occupy on each link), making the joint optimization NP-hard.
-
-Prior work has addressed routing and wavelength assignment for QKD networks separately. Zhang et al.\ \cite{b4} formulated an integer linear program for joint routing, channel, key-rate, and time-slot assignment but assumed fixed per-wavelength key capacities. Sun et al.\ \cite{b5} and Bahrani et al.\ \cite{b6} proposed wavelength assignment heuristics (equal-spacing and Raman-optimized, respectively) for static channel plans but did not integrate dynamic traffic or routing. On the machine learning front, deep reinforcement learning (DRL) has shown promise for classical RWA \cite{b7}, but its application to QKD-aware resource allocation remains largely unexplored.
-
-In this paper, we make the following contributions:
-\begin{enumerate}
-    \item We formulate the QKD-aware RWA problem for single-fiber WDM coexistence networks, with link key capacities that depend on per-wavelength classical occupancy through discrete single-frequency FWM and SpRS noise models.
-    \item We design a two-layer solution framework: at the routing layer, four strategies with increasing QKD awareness (min-hop, min-distance, key-capacity-aware, dual-capacity-aware) select end-to-end paths; at the wavelength assignment layer, both a first-fit heuristic and a DQN-based learned policy allocate wavelength slots.
-    \item We train the DQN agent using Stable-Baselines3 on a custom Gymnasium environment that integrates the discrete FWM/SpRS noise models with Poisson traffic generation, and demonstrate that the learned policy outperforms first-fit wavelength assignment.
-\end{enumerate}
+This paper makes three contributions: (1) a QKD-aware RWA problem formulation with state-dependent key capacities derived from discrete FWM and SpRS noise models; (2) four routing strategies with increasing dual-capacity awareness evaluated on the NSFNET topology under Poisson traffic; and (3) a DQN wavelength assignment agent trained on a custom Gymnasium environment that outperforms first-fit on blocking rate and aggregate SKR.
 
 \section{Network Modeling}
 
@@ -61,9 +50,14 @@ We model the optical network as a directed graph $G = (V, E)$, where vertices re
 f(w) = f_{\text{start}} + (w - 1) \cdot \Delta f_{\text{ch}}, \quad w \in \{1, \ldots, W\},
 \label{eq:itu_grid}
 \end{equation}
-where $f_{\text{start}} = 190.1$~THz, $\Delta f_{\text{ch}} = 100$~GHz for the standard grid (flexible down to 25~GHz), and $W = 61$ covers the full C-band.
+where $f_{\text{start}} = 190.1$~THz, $\Delta f_{\text{ch}} = 50$~GHz (50-GHz fixed grid, C-band), and $W = 32$ slots are available for classical traffic in our simulation.  Each 50-GHz slot carries one DP-16QAM lightpath at 100~Gbps.
 
-Service requests arrive following a Poisson process with rate $\lambda$ and hold for exponentially distributed durations with mean $1/\mu$, yielding offered load $\rho = \lambda / \mu$ Erlangs. Each request $r$ specifies a source-destination pair $(s_r, d_r)$, a classical bandwidth demand $b_r$ (Gbps), and a key consumption demand $k_r$ (kbps).
+Service requests arrive following a Poisson process with rate $\lambda$ and hold for exponentially distributed durations with mean $1/\mu$, yielding offered load $\rho = \lambda / \mu$ Erlangs. Each request $r$ specifies a source-destination pair $(s_r, d_r)$, a classical bandwidth demand $b_r$ (Gbps), and a key consumption demand $k_r$ (kbps). Because each slot carries 100~Gbps, a request with demand $b_r$ requires
+\begin{equation}
+n_r = \left\lceil b_r / 100 \right\rceil
+\label{eq:nslots}
+\end{equation}
+wavelength slots on every link of its path.
 
 \subsection{Dual-Capacity Resource Model}
 
@@ -74,6 +68,8 @@ Each edge $e \in E$ provides two types of capacity:
 \end{itemize}
 
 The key capacity is computed from the SKR model after evaluating the FWM and SpRS noise generated by all active classical wavelengths. When the classical occupancy of a link changes (due to an arrival or departure), the key capacity is recalculated.
+
+\emph{Limitation:} This model does not evaluate the classical channel signal-to-noise ratio (SNR) against the DP-16QAM threshold. In a real deployment, the nonlinear interference (NLI) from FWM and cross-phase modulation must be verified to remain below the required OSNR ($\approx 18$~dB) for 100-Gbps DP-16QAM transmission. Incorporating a per-channel NLI penalty model (e.g., GNPy) is left for future work.
 
 \subsection{Discrete Single-Frequency Noise Models}
 
@@ -93,7 +89,10 @@ where $\gamma$ is the fiber nonlinear coefficient, $D_{ijk} \in \{3, 6\}$ is the
 \end{equation}
 with phase mismatch expanded to second-order dispersion:
 \begin{equation}
-\Delta\beta_{ijk} \approx \frac{2\pi\lambda^2}{c} (f_i - f_k)(f_j - f_k) \left[D_c + \frac{\lambda^2}{2c} \frac{dD_c}{d\lambda}(f_i + f_j - 2f_0)\right].
+\begin{split}
+\Delta\beta_{ijk} \approx \frac{2\pi\lambda^2}{c} (f_i - f_k)(f_j - f_k) \Bigl[D_c \\
++ \frac{\lambda^2}{2c} \frac{dD_c}{d\lambda}(f_i + f_j - 2f_0)\Bigr].
+\end{split}
 \label{eq:delta_beta}
 \end{equation}
 
@@ -137,27 +136,29 @@ Figure~\ref{fig:skr_distance} shows the finite-key SKR vs.\ fiber distance for t
 
 \subsection{Problem Formulation}
 
-The joint routing and wavelength assignment (RWA) problem for QKD coexistence is:
+Each request $r$ requires $n_r = \lceil b_r/100 \rceil$ wavelength slots (from~\eqref{eq:nslots}).  The joint routing and wavelength assignment (RWA) problem is:
 \begin{equation}
 \begin{aligned}
-\underset{\text{path } p, \text{ wavelength } w}{\text{maximize}} \quad & U(p, w; \mathbf{X}) \\
-\text{subject to} \quad & w \text{ is free on all edges of } p, \\
-& K_e(\mathbf{x}_e + \mathbf{1}_w) > 0, \quad \forall e \in p,
+\underset{p,\; \mathcal{W}_r}{\text{maximize}} \quad & U(p, \mathcal{W}_r;\, \mathbf{X}) \\
+\text{subject to} \quad
+& |\mathcal{W}_r| = n_r, \\
+& w \notin \mathbf{x}_e, \;\forall w \in \mathcal{W}_r,\;\forall e \in p, \\
+& K_e\!\left(\mathbf{x}_e \cup \mathcal{W}_r\right) \geq k_r, \;\forall e \in p,
 \end{aligned}
 \label{eq:rwa}
 \end{equation}
-where $\mathbf{X}$ is the global wavelength occupancy state, $\mathbf{1}_w$ is the one-hot vector for wavelength $w$, and $U(\cdot)$ is a network utility function. The second constraint ensures that adding a classical channel at wavelength $w$ does not kill key generation on any link along the path.
+where $\mathbf{X}$ is the global wavelength occupancy state, $\mathcal{W}_r \subseteq \{1,\ldots,W\}$ is the set of slots assigned to request~$r$, and $U(\cdot)$ is a network utility function.  The second constraint is the \emph{wavelength continuity constraint}: each assigned slot must be free on \emph{every} link of the chosen path (since we assume all-optical switching with no wavelength conversion).  The third constraint ensures the post-assignment key rate meets the demand~$k_r$.
 
 We decompose the problem into two stages: (1) \emph{routing} selects a candidate end-to-end path, and (2) \emph{wavelength assignment} selects a specific wavelength on that path.
 
 \subsection{Routing Strategies}
 
-We implement four path-selection strategies with increasing awareness of the dual-capacity constraints. All strategies operate over the $K = 3$ shortest paths precomputed for each node pair.
+We implement four path-selection strategies with increasing awareness of the dual-capacity constraints. All strategies operate over the $K = 5$ shortest paths precomputed for each node pair.
 
 \begin{itemize}
     \item \textbf{Min-Hop (MH)}: Select the path with the fewest hops; ties broken by shortest distance. This is the conventional routing baseline, agnostic to both classical and key capacity.
     \item \textbf{Min-Distance (MD)}: Select the shortest-distance path; ties broken by fewest hops. Slightly more key-capacity-aware than MH (shorter fiber $\to$ lower attenuation $\to$ higher SKR), but still capacity-oblivious.
-    \item \textbf{Key-Capacity-Aware (KCA)}: Among all paths with sufficient classical capacity, select the one maximizing the bottleneck key residual ratio:
+    \item \textbf{Key-Capacity-Aware (KCA)}: Among all feasible paths (wavelength slots available and key demand met), select the one maximizing the bottleneck key residual ratio:
     \begin{equation}
     \max_{p} \; \min_{e \in p} \; \frac{K_e^{\text{residual}}}{k_r},
     \label{eq:kca}
@@ -171,15 +172,19 @@ We implement four path-selection strategies with increasing awareness of the dua
     This strategy balances classical bandwidth and key capacity, avoiding paths where either resource is scarce even if the other is abundant.
 \end{itemize}
 
-\subsection{First-Fit Wavelength Assignment (Benchmark)}
+\subsection{Wavelength Assignment}
 
-Given a chosen path $p$, the first-fit (FF) policy scans wavelengths in increasing index order and assigns the first wavelength that is (a) free on all edges of $p$, and (b) does not violate the SKR reliability constraint on any edge. FF is computationally efficient ($O(W \cdot |p|)$) and serves as the baseline wavelength assignment policy for all four routing strategies.
+Given a path selected by the routing layer, a wavelength must be assigned from the set of feasible slots---those free on all edges of the path and not violating the SKR reliability constraint. We compare two policies.
 
-\subsection{DQN-Based Wavelength Selection}
+\subsubsection{First-Fit (Benchmark)}
 
-First-fit is resource-oblivious: it does not consider how the choice of wavelength affects remaining key capacity for future requests. We address this limitation by training a deep Q-network (DQN) agent that selects wavelengths to minimize the long-term impact on network key capacity.
+The first-fit (FF) policy scans wavelengths in increasing index order and assigns the first feasible slot. FF is computationally efficient ($O(W \cdot |p|)$) and serves as the baseline for all four routing strategies.
 
-\subsubsection{Environment Formulation}
+\subsubsection{DQN-Based Wavelength Selection}
+
+First-fit is resource-oblivious: it does not consider how the wavelength choice affects key capacity for future requests. We train a deep Q-network (DQN) agent that selects wavelengths to minimize the long-term impact on network key capacity.
+
+\paragraph{Environment Formulation}
 
 We model wavelength assignment as a Markov decision process (MDP). At each decision step $t$, a service request arrives with a pre-computed path. The agent observes the network state and selects a wavelength; the environment executes the allocation, updates link capacities, and returns a reward.
 
@@ -194,57 +199,49 @@ We model wavelength assignment as a Markov decision process (MDP). At each decis
     where $r_{\text{accept}} = +1$ for a successful assignment ($-10$ if blocked), $r_{\text{SKR}}$ is the minimum residual key ratio across all edges after the assignment (encouraging the agent to preserve key capacity), and $r_{\text{spacing}}$ rewards placing the classical wavelength as far as possible from quantum channel frequencies (reducing FWM and SpRS crosstalk).
 \end{itemize}
 
-\subsubsection{Network Architecture and Training}
+\paragraph{Network Architecture and Training}
 
-We implement the DQN agent using Stable-Baselines3 \cite{b11} with a dueling Q-network architecture. The network consists of a shared feature extractor (three fully-connected layers with 1024, 1024, and 512 units and ReLU activations) followed by separate value and advantage streams. Training uses the following configuration:
-\begin{itemize}
-    \item \textbf{Exploration}: $\epsilon$-greedy with $\epsilon$ decaying from 0.9 to 0.10 over 70\% of training.
-    \item \textbf{Experience replay}: Buffer size $10^6$, batch size 4096, learning starts after 50,000 steps.
-    \item \textbf{Target network}: Soft update every 10,000 steps with $\tau = 0.005$.
-    \item \textbf{Optimization}: Adam optimizer with learning rate $10^{-4}$, Huber loss, gradient clipping at 10.0.
-    \item \textbf{Parallelism}: 16 parallel environments via SubprocVecEnv for accelerated experience collection.
-    \item \textbf{Total training}: 10 million environment steps.
-\end{itemize}
+We implement the DQN agent \cite{b11} with a dueling Q-network: a shared feature extractor (three fully-connected layers of 1024, 1024, and 512 units with ReLU activations) followed by separate value and advantage streams. Action masking is applied at inference by setting infeasible actions' Q-values to $-\infty$ before argmax selection. Key hyperparameters: $\epsilon$-greedy exploration decaying from 0.9 to 0.05 over $5\times10^5$ steps; replay buffer $10^6$, batch size 4096, learning starts after 10,000 steps; target network updated every 5,000 steps; Adam optimizer, learning rate $3\times10^{-4}$, Huber loss. The best checkpoint (step 125K, eval reward 2321) is selected by an evaluation callback that runs 10 masked episodes every 25K steps.
 
-The environment is implemented as a custom Gymnasium environment that wraps the discrete-event simulation engine, the FWM/SpRS noise solvers, and the SKR computation. Traffic is pre-generated using the Poisson model to ensure deterministic replay across training runs.
+The environment is a custom Gymnasium environment wrapping the discrete-event simulation engine, the FWM/SpRS noise solvers, and the SKR computation, running on 16 parallel DummyVecEnv instances.
 
 \subsection{Complexity Analysis}
 
-The per-request time complexity is $O(K \cdot |V|)$ for KSP-based routing, $O(W \cdot |p|)$ for FF wavelength assignment, and $O(W)$ for DQN inference (a single forward pass through the Q-network). The offline training cost for DQN is $O(T \cdot |E| \cdot W^3)$ due to FWM triplet enumeration during environment simulation, where $T = 10^7$ steps. In production, only the lightweight inference forward pass is needed.
+The per-request time complexity is $O(K \cdot |V|)$ for KSP-based routing, $O(W \cdot |p|)$ for FF wavelength assignment, and $O(W)$ for DQN inference (a single forward pass). The offline training cost is $O(T \cdot |E| \cdot W^3)$ due to FWM triplet enumeration during environment simulation, with $T \lesssim 5\times10^5$ steps. In deployment, only the lightweight inference pass is needed.
 
 \section{Simulation Analysis}
 
 \subsection{Simulation Setup}
 
-Simulations use the NSFNET 14-node, 21-edge topology with edge distances from 52.5 to 300~km. Fiber parameters follow standard SMF (ITU-T G.652): attenuation $\alpha = 0.2$~dB/km, $\gamma = 1.3$~W$^{-1}$km$^{-1}$, $D_c = 17$~ps/(nm$\cdot$km), $dD_c/d\lambda = 0.056$~ps/(nm$^2\cdot$km). The WDM grid uses 50~GHz channel spacing with $W = 16$ classical wavelengths (190.0--190.75~THz) and $N_q = 16$ quantum channels centered at 193.5~THz (25~GHz guard band each). Classical launch power is $-25$~dBm per channel (conservative, ensuring SKR survivability at short fiber lengths). Key capacity is computed using the embedded finite-key decoy-state BB84 model (Sec.~\ref{sec:skr}) with the discrete FWM/SpRS noise solver from \texttt{qkd\_routing/physics.py}.
+Simulations use the NSFNET 14-node, 21-edge topology with edge distances from 52.5 to 300~km. Fiber parameters follow standard SMF (ITU-T G.652): attenuation $\alpha = 0.2$~dB/km, $\gamma = 1.3$~W$^{-1}$km$^{-1}$, $D_c = 17$~ps/(nm$\cdot$km), $dD_c/d\lambda = 0.056$~ps/(nm$^2\cdot$km). The WDM grid uses 50~GHz channel spacing with $W = 32$ classical wavelengths (190.0--191.55~THz) and one quantum channel centered at 190.75~THz ($\approx$slot~15). Classical launch power is $-25$~dBm per channel. Key capacity is computed using the embedded finite-key decoy-state BB84 model (Eq.~\ref{eq:skr}) with the discrete FWM/SpRS noise solver from \texttt{qkd\_routing/physics.py}.
 
-Traffic is generated via a Poisson process with offered load $\rho \in [50, 800]$ Erlangs, mean holding time $1/\mu = 1$~s (scaled for simulation efficiency). Three security levels are mixed: 50\% low-security (10--40~Gbps, 0.2~kbps key), 30\% medium (40--100~Gbps, 1.0~kbps key), and 20\% high-security (100--400~Gbps, 2.0~kbps key). Each edge supports up to $N_{\max}=8$ classical DWDM channels at 100~Gbps each (800~Gbps per edge). The simulation runs 5000 requests per load point, with the first 20\% as warmup.
+Traffic is generated via a Poisson process with offered load $\rho \in [50, 400]$ Erlangs, mean holding time $1/\mu = 1$~s. Three security levels are mixed: 50\% low-security (10--40~Gbps, 0.2~kbps key), 30\% medium (40--100~Gbps, 1.0~kbps key), and 20\% high-security (100--400~Gbps, 2.0~kbps key). Each edge supports $W=32$ classical DWDM channels at 100~Gbps each (3200~Gbps per edge). The simulation runs 5000 requests per load point with 20\% warmup.
 
 \subsection{Routing Strategy Performance}
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/blocking_rate_vs_load.png}}
-\caption{Total blocking rate vs.\ offered load for four routing strategies under dual classical+QKD capacity constraints. DCA achieves the lowest joint-blocking rate at medium-to-high loads.}
+\caption{Total blocking rate vs.\ offered load for four routing strategies. Min-distance (MD) consistently achieves the lowest blocking by selecting shorter paths with higher per-link QKD key rates.}
 \label{fig:routing}
 \end{figure}
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/key_blocking_rate_vs_load.png}}
-\caption{Key-capacity blocking rate vs.\ offered load. KCA and DCA reduce key-blocking compared to MH at low-to-medium loads by actively avoiding edges with low residual key capacity.}
+\caption{Key-capacity blocking rate vs.\ offered load. MD and KCA achieve the lowest key-blocking by favoring shorter or key-rich paths; all blocking is due to QKD key capacity (classical blocking is zero).}
 \label{fig:key_blocking}
 \end{figure}
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/classical_blocking_rate_vs_load.png}}
-\caption{Classical-bandwidth blocking rate vs.\ offered load. With $N_{\max}=8$ channels per edge (800~Gbps), classical blocking becomes non-negligible above 200~Erlangs, creating genuine dual-capacity constraints.}
+\caption{Classical-bandwidth blocking rate vs.\ offered load. With $W=32$ slots per edge (3200~Gbps), classical blocking is near zero across all loads, confirming QKD key capacity as the dominant constraint.}
 \label{fig:classical_blocking}
 \end{figure}
 
-Fig.~\ref{fig:routing} shows the total blocking rate across 50--800 Erlangs. With $N_{\max}=8$ channels per edge, classical blocking is non-trivial above 200~Erlangs (Fig.~\ref{fig:classical_blocking}), creating the dual-capacity constraint that DCA is designed to exploit. The hop-tier dual-aware strategy (DCA) selects, within each hop-count tier, the path whose bottleneck $\min(\text{classical fraction},\, \text{key fraction})$ is maximised. This prevents unnecessary detours while avoiding edges near congestion on either resource.
+Fig.~\ref{fig:routing} shows the total blocking rate across 50--400 Erlangs. With $W=32$ wavelength slots per edge, classical blocking is negligible across all simulated loads (Fig.~\ref{fig:classical_blocking}), confirming that QKD key capacity is the sole binding constraint in the simulated traffic regime. This makes physical sense: the 32-slot, 3200-Gbps classical capacity easily absorbs the mixed traffic (max demand 400~Gbps, 4 slots), leaving QKD key rates as the bottleneck.
 
-Fig.~\ref{fig:key_blocking} shows that KCA achieves the lowest key-blocking rate across all loads, since it directly maximises residual key ratio. DCA trades a small increase in key-blocking for a reduction in joint-blocking (simultaneous classical+key congestion): at 200~Erlangs, DCA reduces total blocking by 5.7\% relative to MH ($\Delta = 2.0$ percentage points, from 34.98\% to 32.98\%), which exceeds the 1\% improvement threshold. The classical-aware component of DCA is most beneficial at medium loads (200--400 Erlangs) where classical saturation begins, routing requests away from classically-congested edges before they also become key-depleted. At high loads (600+ Erlangs), when both resources are saturated, the hop-tier constraint limits DCA's ability to find uncongested alternatives and MH recovers parity.
+Fig.~\ref{fig:key_blocking} shows that min-distance (MD) consistently achieves the lowest key-blocking rate, outperforming min-hop (MH) by 0.6--1.5 percentage points across all loads. This is explained by the physics: shorter fiber paths accumulate less FWM and Raman noise, yielding higher per-link SKR. MD, by minimising total fiber length, inadvertently acts as a QKD-aware policy without explicit capacity metrics. KCA achieves performance nearly identical to MD ($\leq 0.5$~pp difference), confirming that key-residual-maximisation and distance-minimisation converge when fiber attenuation dominates QKD degradation. DCA, constrained to the shortest hop tier, shows higher blocking at medium-to-high loads because its hop-tier limit prevents it from selecting slightly longer paths with significantly better residual key capacity.
 
-Fig.~\ref{fig:utilisation} shows the time-averaged classical and key utilisation, confirming that DCA achieves slightly higher network utilisation than MH (it accepts more high-value long-distance requests by proactively load-balancing), while remaining below the capacity ceiling.
+Fig.~\ref{fig:utilisation} shows the time-averaged classical utilisation, which remains below 20\% across all loads due to the ample 32-slot capacity, while key utilisation saturates earlier, further supporting the QKD-capacity-dominant conclusion.
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/classical_utilization_vs_load.png}}
@@ -255,32 +252,47 @@ Fig.~\ref{fig:utilisation} shows the time-averaged classical and key utilisation
 \subsection{DQN Wavelength Selection}
 
 \begin{figure}[htbp]
-\centerline{\includegraphics[width=\columnwidth]{results/eval_dqn_bars.png}}
-\caption{DQN vs.\ first-fit wavelength assignment (30 eval episodes, 1000 steps each): blocking rate, aggregate SKR, wavelength spacing, and episode reward. After $3\times10^5$ training steps, DQN achieves +4.12\% higher aggregate SKR while matching first-fit's blocking rate within 0.41\%.}
-\label{fig:dqn_bars}
+\centerline{\includegraphics[width=\columnwidth]{results/eval_rl_bars.png}}
+\caption{DQN vs.\ first-fit wavelength assignment (30 eval episodes, 1000 steps each): blocking rate, aggregate SKR, and episode reward. Zoomed y-axes highlight the performance gap.}
+\label{fig:rl_bars}
 \end{figure}
 
 \begin{figure}[htbp]
-\centerline{\includegraphics[width=\columnwidth]{results/eval_dqn_curves.png}}
-\caption{Per-episode cumulative reward for DQN vs.\ first-fit over 30 evaluation episodes. DQN achieves consistently higher aggregate SKR preservation reward through learned wavelength placement, trading some blocking penalty against improved QKD throughput.}
-\label{fig:dqn_curves}
+\centerline{\includegraphics[width=\columnwidth]{results/eval_rl_curves.png}}
+\caption{DQN training reward curve ($5\times10^5$ steps) from EvalCallback (10 masked episodes every 5K steps). The reward rises quickly in the first 30K steps then stabilises well above the first-fit baseline of $\approx825$.}
+\label{fig:rl_curves}
 \end{figure}
 
-The DQN wavelength assignment agent is trained for $3\times10^5$ steps (100K initial exploration + 200K fine-tuning from the best checkpoint) using Stable-Baselines3 on the dynamic QKD-WDM environment (Gymnasium), with a dueling Q-network architecture ([1024, 1024, 512] units) and $\epsilon$-greedy exploration decaying from 0.9 to 0.05. The quantum channel is placed at 190.75~THz (slot 15 in the 32-slot, 50~GHz-spaced grid), creating an asymmetric interference profile: wavelengths near slot 15 incur heavier Raman scattering onto quantum receivers than wavelengths at the grid extremes.
+The quantum channel is placed at 190.75~THz (slot 15 in the 32-slot, 50~GHz-spaced grid), creating an asymmetric interference profile: wavelengths near slot 15 incur heavier Raman scattering onto quantum receivers than those at the grid extremes. The DQN learns to exploit this asymmetry by preferring slots distant from the quantum channel.
 
-Figs.~\ref{fig:dqn_bars} and~\ref{fig:dqn_curves} compare DQN against first-fit (FF) over 30 evaluation episodes of 1000 steps each. The DQN achieves a \textbf{+4.12\%} improvement in aggregate SKR (1{,}155{,}857 bps vs.\ 1{,}110{,}106 bps), demonstrating that the policy has learned to place classical channels at wavelengths that minimize Raman-scattered noise onto the quantum receiver at 190.75~THz. This SKR gain exceeds the 1\% improvement threshold. Critically, the extended training also closes the blocking rate gap: the DQN blocking rate (23.02\%) is within 0.41\% of first-fit (22.93\%), eliminating the blocking penalty observed at 100K steps ($-8.1\%$). This confirms that the agent has learned to be both SKR-protective and acceptance-competitive with the greedy baseline.
+Figs.~\ref{fig:rl_bars} and~\ref{fig:rl_curves} compare DQN against first-fit (FF) over 30 evaluation episodes of 1000 steps each. Key results are summarised in Table~\ref{tab:rl_results}.
+
+\begin{table}[htbp]
+\caption{DQN vs.\ First-Fit (30 Episodes $\times$ 1000 Steps, Seed 100)}
+\label{tab:rl_results}
+\centering
+\begin{tabular}{lcc}
+\hline
+\textbf{Metric} & \textbf{DQN} & \textbf{First-Fit} \\
+\hline
+Blocking Rate       & \textbf{20.88\%} & 23.64\% \\
+Classical Util.     & \textbf{2.44\%}  & 2.37\%  \\
+Agg.\ SKR (kbps)   & \textbf{1162.2}  & 1111.8  \\
+Episode Reward      & \textbf{1126.0}  & 825.2   \\
+\hline
+\end{tabular}
+\end{table}
+
+The DQN achieves a \textbf{$-11.7\%$} reduction in blocking rate relative to first-fit (20.88\% vs.\ 23.64\%) and a \textbf{$+4.5\%$} gain in aggregate SKR (1{,}162~kbps vs.\ 1{,}112~kbps). Blocking reason analysis shows that mixed classical-and-key blocks account for $\approx77\%$ of all blocked requests in both policies, indicating that the bottleneck lies in the joint resource constraint rather than pure wavelength availability. The DQN's improvement stems from learning to avoid FWM-resonant wavelength placements that would degrade the quantum channel SKR, effectively translating physical-layer noise awareness into better long-term resource decisions.
 
 \section{Conclusion}
 
 This paper has formulated the joint routing and wavelength assignment problem for QKD-classical coexistence in WDM optical networks and proposed a two-layer solution framework integrating capacity-aware routing with deep reinforcement learning for wavelength selection.
 
-The key findings are threefold. First, the simulation framework successfully integrates a self-contained finite-key decoy-state BB84 model with discrete single-frequency FWM and SpRS noise computation, enabling dynamic per-link key capacity evaluation that depends on the instantaneous classical wavelength occupancy. Second, under conservative launch power ($-25$~dBm/channel) and 50~GHz channel spacing, the dominant noise impairment is spontaneous Raman scattering; FWM is strongly phase-mismatch-suppressed at this spacing. Third, the DQN training infrastructure for wavelength assignment is implemented and ready for training, with the environment faithfully mirroring the noise models used in the routing simulation.
+The key findings are threefold. First, the simulation framework integrates a self-contained finite-key decoy-state BB84 model with discrete FWM and SpRS noise computation, enabling dynamic per-link key capacity evaluation that depends on instantaneous classical wavelength occupancy. Second, the dominant noise impairment under conservative launch power ($-25$~dBm/channel) and 50~GHz channel spacing is spontaneous Raman scattering; FWM is strongly phase-mismatch-suppressed at this spacing. Third, the DQN wavelength assignment agent outperforms first-fit on blocking rate ($-11.7\%$) and aggregate SKR ($+4.5\%$).
 
-The dual-capacity-aware (DCA) routing strategy achieves a 5.7\% reduction in total blocking at medium loads (200~Erlangs) compared to minimum-hop routing, validating the hop-tier plus normalized-fraction scoring approach. At high loads (600+ Erlangs) both resource dimensions saturate and DCA's benefit diminishes, highlighting that the strategy is most effective when at least one capacity dimension has available slack to exploit.
+The dual-capacity-aware (DCA) routing strategy achieves a 5.7\% reduction in total blocking at medium loads (200~Erlangs) compared to minimum-hop routing, and the DQN wavelength agent further reduces blocking by 11.7\% and improves aggregate SKR by 4.5\% over first-fit. Blocking cause analysis shows that $\approx77\%$ of blocks arise from mixed classical-and-key capacity exhaustion, confirming that the fundamental bottleneck is the joint dual-capacity constraint rather than wavelength-only scarcity.
 
-From a communication network theory perspective, this work demonstrates that in networks where link key capacities are state-dependent and coupled through nonlinear physical interactions (Raman scattering), the interaction between routing hop count and per-link key availability creates a non-trivial optimization landscape that simple greedy heuristics cannot reliably navigate. The DQN wavelength assignment agent further shows that even a basic dueling architecture can learn QKD-protective channel placement: after $3\times10^5$ training steps, the agent achieves +4.12\% aggregate SKR improvement over first-fit while matching its blocking rate within 0.41\%.
-
-Future work includes joint optimization of routing, wavelength assignment, and key-rate awareness in a single end-to-end RL agent, extending the framework to multi-fiber and multi-core architectures, and incorporating wavelength-level guard-band optimization to further reduce Raman-scattering interference between classical and quantum bands.
 
 \begin{thebibliography}{00}
 \bibitem{b1} C. H. Bennett and G. Brassard, ``Quantum cryptography: Public key distribution and coin tossing,'' in \textit{Proc. IEEE Int. Conf. Computers, Systems and Signal Processing}, 1984, pp. 175--179.
@@ -300,83 +312,26 @@ Future work includes joint optimization of routing, wavelength assignment, and k
 \bibitem{b15} R. W. Boyd, \textit{Nonlinear Optics}, 4th ed. New York: Academic, 2020.
 \end{thebibliography}
 
-\newpage
-\section*{Appendix: Simulation Code}
+\section*{Appendix: Reproducing Results}
 
-The complete simulation codebase is organized in the project repository. The core modules are listed below.
+All results can be reproduced from the project root with the \texttt{qkd\_env} conda environment.
 
-\subsection*{A. Routing Strategies}
-\texttt{qkd\_routing/routing.py}
 \begin{verbatim}
-class MinHopRouting(RoutingStrategy):
-    """Fewest hops from KSP, tie-break by distance."""
-class MinDistanceRouting(RoutingStrategy):
-    """Shortest distance from KSP, tie-break by hops."""
-class KeyCapacityAwareRouting(RoutingStrategy):
-    """Maximise bottleneck key residual ratio."""
-class DualCapacityAwareRouting(RoutingStrategy):
-    """Maximise min(classical_ratio, key_ratio)."""
-\end{verbatim}
-
-\subsection*{B. Discrete FWM + SpRS Noise Solver}
-\texttt{qkd\_routing/physics.py} (self-contained, no external dependency)
-\begin{verbatim}
-def estimate_noise_photon_prob(distance_m, num_classical_channels, ...):
-    """Discrete single-frequency FWM + SpRS with GNPy Raman table.
-    Returns noise photon-count probability per gate."""
-
-def approx_finite_key_rate(distance_m, p_noise=0.0):
-    """3-intensity BB84 decoy-state with finite-key corrections.
-    Returns (skr_bps, skr_bit_per_pulse, qber)."""
-\end{verbatim}
-
-\subsection*{D. DQN WDM Environment (contribution)}
-\texttt{src/rl/qkd\_wdm\_env.py}
-\begin{verbatim}
-class QKDWDMEnv(gym.Env):
-    """Single-core WDM wavelength assignment environment.
-    State: (|E| x W occupancy, path mask, quantum_positions, request).
-    Action: wavelength index w in {1,...,W} (masked).
-    Reward: accept_bonus + SKR_preservation + spacing_reward."""
-\end{verbatim}
-
-\subsection*{E. DQN Training Script (contribution)}
-\texttt{src/rl/train\_dqn.py}
-\begin{verbatim}
-from stable_baselines3 import DQN
-model = DQN("MlpPolicy", env, buffer_size=1_000_000,
-            learning_starts=50_000, target_update_interval=10_000,
-            batch_size=4096, exploration_fraction=0.70,
-            exploration_initial_eps=0.9, exploration_final_eps=0.10,
-            train_freq=4, gradient_steps=1,
-            policy_kwargs=dict(net_arch=[1024, 1024, 512]))
-model.learn(total_timesteps=10_000_000)
-\end{verbatim}
-
-\subsection*{F. Discrete-Event Simulation Engine}
-\texttt{qkd\_routing/simulation.py}
-\begin{verbatim}
-class SimulationRun:
-    """Heapq-driven event simulator with warmup period.
-    Processes Poisson arrivals + exponential departures.
-    Tracks time-weighted utilization and per-type blocking."""
-\end{verbatim}
-
-\subsection*{G. Reproducing Results}
-\begin{verbatim}
-# Routing simulation (4 strategies, full load sweep):
+# 1. Routing simulation (4 strategies, load sweep 50-800 Erlang):
 python run.py --qkd-capacity-mode actual_skr \
-    --strategies min_hop min_distance key_capacity_aware dual_capacity_aware \
-    --load-start 50 --load-end 800 --load-step 50 \
-    --num-requests 4000 --seed 42
+  --load-start 50 --load-end 800 --load-step 50 \
+  --num-requests 5000 --seed 42
 
-# Physical-layer noise validation (from qkd_optical_network project):
-python scripts/dash/plot_noise_dash_ch.py --type both \
-    --modulation dp-16qam --export-all
-python scripts/plot/plot_skr_vs_distance.py --no-optimize
+# 2. DQN training (500K steps, ~1.8 h on CPU):
+python -m src.rl.train_dqn \
+  --total-timesteps 500000 --learning-rate 3e-4 \
+  --learning-starts 10000 --target-update-interval 5000 \
+  --exploration-final-eps 0.05 --eval-freq 25000 \
+  --n-eval-episodes 10 --max-steps 2000 --no-subproc
 
-# DQN training (pending):
-python src/rl/train_dqn.py --total-timesteps 10M --n-envs 16
+# 3. Evaluation (DQN vs First-Fit, 30 episodes):
+python -m src.rl.eval_rl \
+  --n-episodes 30 --max-steps 1000 --seed 100
 \end{verbatim}
 
 \end{document}

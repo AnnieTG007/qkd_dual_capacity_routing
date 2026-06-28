@@ -22,17 +22,115 @@ from pathlib import Path
 from typing import Dict
 
 import numpy as np
+import torch
 import torch.nn as nn
 from stable_baselines3 import DQN
-from stable_baselines3.common.callbacks import (
-    EvalCallback,
-    StopTrainingOnNoModelImprovement,
-)
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 
 from .qkd_wdm_env import QKDWDMEnv, EnvConfig, nsfnet14
 from .vec_env import make_vec_env
 from .wrappers import ActionMaskWrapper
+
+
+# ── masked eval callback for DQN ─────────────────────────────────────────────
+
+class MaskedDQNEvalCallback(BaseCallback):
+    """EvalCallback for DQN with manual Q-value masking.
+
+    SB3's EvalCallback calls model.predict() which ignores action masks.
+    This callback manually fetches Q-values, sets infeasible actions to -inf,
+    then picks argmax — matching the inference logic used in eval_rl.py.
+    Convergence detection: stops when no improvement for `max_no_improvement`
+    consecutive evals after at least `min_evals` evaluations.
+    """
+
+    def __init__(
+        self,
+        eval_env,
+        eval_freq: int,
+        n_eval_episodes: int,
+        log_path: Path,
+        best_model_save_path: Path,
+        max_no_improvement: int = 20,
+        min_evals: int = 10,
+        verbose: int = 1,
+    ):
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self.eval_freq = eval_freq
+        self.n_eval_episodes = n_eval_episodes
+        self.log_path = Path(log_path)
+        self.best_model_save_path = Path(best_model_save_path)
+        self.max_no_improvement = max_no_improvement
+        self.min_evals = min_evals
+
+        self.best_mean_reward: float = -np.inf
+        self.last_mean_reward: float = -np.inf
+        self._no_improve_count: int = 0
+        self._n_evals: int = 0
+        self._timesteps: list = []
+        self._results: list = []
+
+    def _masked_action(self, obs: np.ndarray, mask: np.ndarray) -> int:
+        obs_tensor = self.model.policy.obs_to_tensor(obs)[0]
+        with torch.no_grad():
+            q_vals = self.model.q_net(obs_tensor).squeeze(0).cpu().numpy()
+        q_vals[mask == 0] = -np.inf
+        feasible = np.where(mask == 1)[0]
+        if len(feasible) == 0:
+            return 0
+        return int(np.argmax(q_vals))
+
+    def _on_step(self) -> bool:
+        if self.eval_freq > 0 and self.n_calls % self.eval_freq != 0:
+            return True
+
+        W = self.eval_env.action_space.n
+        episode_rewards: list[float] = []
+
+        for _ in range(self.n_eval_episodes):
+            obs, info = self.eval_env.reset()
+            ep_reward = 0.0
+            done = False
+            while not done:
+                mask = info.get("action_mask", np.ones(W, dtype=np.int8))
+                action = self._masked_action(obs, mask)
+                obs, reward, terminated, truncated, info = self.eval_env.step(action)
+                ep_reward += float(reward)
+                done = terminated or truncated
+            episode_rewards.append(ep_reward)
+
+        mean_r = float(np.mean(episode_rewards))
+        std_r  = float(np.std(episode_rewards))
+        self.last_mean_reward = mean_r
+        self._n_evals += 1
+        self._timesteps.append(self.num_timesteps)
+        self._results.append(episode_rewards)
+
+        if self.verbose >= 1:
+            print(f"Eval num_timesteps={self.num_timesteps}, "
+                  f"episode_reward={mean_r:.2f} +/- {std_r:.2f}")
+
+        np.savez(str(self.log_path / "evaluations"),
+                 timesteps=np.array(self._timesteps),
+                 results=np.array(self._results))
+
+        if mean_r > self.best_mean_reward:
+            self.best_mean_reward = mean_r
+            self.model.save(str(self.best_model_save_path / "best_model"))
+            self._no_improve_count = 0
+            if self.verbose >= 1:
+                print("New best mean reward!")
+        else:
+            self._no_improve_count += 1
+
+        if self._n_evals >= self.min_evals and self._no_improve_count >= self.max_no_improvement:
+            if self.verbose >= 1:
+                print(f"\nNo improvement for {self.max_no_improvement} evals. Stopping.")
+            return False
+
+        return True
 
 # ── default paths ──────────────────────────────────────────────────────────
 
@@ -60,7 +158,7 @@ def parse_args() -> argparse.Namespace:
                    help="Max steps per episode")
     p.add_argument("--n-eval-episodes", type=int, default=10,
                    help="Evaluation episodes")
-    p.add_argument("--eval-freq", type=int, default=50_000,
+    p.add_argument("--eval-freq", type=int, default=5_000,
                    help="Evaluate every N steps")
     p.add_argument("--no-subproc", action="store_true",
                    help="Disable subprocess parallelism (debug)")
@@ -144,20 +242,15 @@ def main() -> None:
     eval_env = ActionMaskWrapper(QKDWDMEnv(config=env_config))
     eval_env = Monitor(eval_env)
 
-    # Stop training if no improvement for 100 eval steps
-    stop_callback = StopTrainingOnNoModelImprovement(
-        max_no_improvement_evals=100,
-        min_evals=50,
-        verbose=1,
-    )
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=str(_CHECKPOINT_DIR),
-        log_path=str(_LOG_DIR),
+    eval_callback = MaskedDQNEvalCallback(
+        eval_env=eval_env,
         eval_freq=max(args.eval_freq // args.n_envs, 1),
         n_eval_episodes=args.n_eval_episodes,
-        deterministic=True,
-        callback_after_eval=stop_callback,
+        log_path=_LOG_DIR,
+        best_model_save_path=_CHECKPOINT_DIR,
+        max_no_improvement=20,
+        min_evals=10,
+        verbose=1,
     )
 
     # Build or resume DQN model

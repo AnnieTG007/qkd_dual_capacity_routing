@@ -23,14 +23,14 @@ class SimulationConfig:
     # ---- Classical capacity mode ----
     classical_capacity_mode: str = "constant"
     # "constant" | "csv" | "gnpy_csv" | "gnpy_optional"
-    constant_classical_capacity_gbps: float = 1600.0  # 16 ch × 100 Gbps
+    constant_classical_capacity_gbps: float = 3200.0  # 32 ch × 100 Gbps
     classical_capacity_csv_path: Optional[str] = None
     gnpy_result_csv_path: Optional[str] = None
     # GSNR-to-capacity parameters (for gnpy_csv with GSNR data)
     gnpy_bandwidth_ghz: float = 75.0
     gnpy_osnr_margin_db: float = 3.0
     # WDM channel model
-    n_max_classical_channels: int = 8         # max DWDM channels per edge
+    n_max_classical_channels: int = 32        # max DWDM channels per edge (32-ch C-band 50 GHz grid)
     classical_bandwidth_per_ch_gbps: float = 100.0  # data-rate per channel
 
     # ---- QKD key capacity mode ----

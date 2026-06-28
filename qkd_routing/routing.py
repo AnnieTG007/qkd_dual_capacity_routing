@@ -30,11 +30,9 @@ def classify_blocking_type(
 ) -> str:
     """Determine the dominant blocking reason across *candidate_paths*.
 
-    For each path we check whether classical capacity, key capacity, both,
-    or neither would be sufficient.
-
     Returns one of:
         'topology_blocking'
+        'wavelength_blocking'   — capacity OK but no common free slot
         'classical_blocking'
         'key_blocking'
         'joint_blocking'
@@ -44,27 +42,30 @@ def classify_blocking_type(
 
     has_classical_feasible = False
     has_key_feasible = False
-    has_both_feasible = False
+    has_wavelength_blocked = False  # capacity OK but no free wavelength
 
     for path, _cost in candidate_paths:
         status = network.classify_path_feasibility(
             path, request.bandwidth_gbps, request.key_rate_kbps
         )
         if status == "feasible":
-            has_both_feasible = True
+            return "success"  # should not happen if we're classifying a block
+        elif status == "wavelength_blocking":
+            has_wavelength_blocked = True
             has_classical_feasible = True
             has_key_feasible = True
-            break  # at least one fully feasible → not "blocked" in classification
         elif status == "classical_insufficient":
             has_key_feasible = True
         elif status == "key_insufficient":
             has_classical_feasible = True
         # joint_insufficient contributes to neither
 
-    if has_both_feasible:
-        # Should not be called for a successful routing, but if it is:
-        return "success"
-
+    # Wavelength continuity blocking takes priority when capacity would suffice
+    if has_wavelength_blocked and not has_classical_feasible:
+        # All paths would be capacity-OK but wavelength blocked
+        return "wavelength_blocking"
+    if has_wavelength_blocked:
+        return "wavelength_blocking"
     if has_classical_feasible and not has_key_feasible:
         return "key_blocking"
     if has_key_feasible and not has_classical_feasible:

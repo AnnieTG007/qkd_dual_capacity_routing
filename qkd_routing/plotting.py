@@ -52,9 +52,12 @@ def _setup_figure(title: str, xlabel: str, ylabel: str):
     return fig, ax
 
 
-def _plot_strategy_lines(ax, df: pd.DataFrame, x_col: str, y_col: str):
-    """Plot one line per strategy from the results DataFrame."""
+def _plot_strategy_lines(ax, df: pd.DataFrame, x_col: str, y_col: str,
+                         max_load: float = 400.0):
+    """Plot one line per strategy, focused on low-to-medium load (<=max_load)."""
+    df = df[df[x_col] <= max_load]
     strategies = df["strategy"].unique()
+    all_y = []
     for strat in strategies:
         sub = df[df["strategy"] == strat].sort_values(x_col)
         style = STRATEGY_STYLES.get(strat, {})
@@ -68,7 +71,13 @@ def _plot_strategy_lines(ax, df: pd.DataFrame, x_col: str, y_col: str):
             linewidth=1.8,
             markersize=6,
         )
+        all_y.extend(sub[y_col].tolist())
     ax.legend(fontsize=9, loc="best")
+    # Auto-scale y-axis to data range with margin so differences are visible
+    if all_y:
+        ymin, ymax = min(all_y), max(all_y)
+        margin = max((ymax - ymin) * 0.20, 0.005)
+        ax.set_ylim(max(0, ymin - margin), ymax + margin)
 
 
 def plot_blocking_rate_vs_load(df: pd.DataFrame, output_dir: str):
@@ -79,7 +88,6 @@ def plot_blocking_rate_vs_load(df: pd.DataFrame, output_dir: str):
         "Blocking Probability",
     )
     _plot_strategy_lines(ax, df, "load", "blocking_rate")
-    ax.set_ylim(bottom=-0.02, top=1.02)
     path = os.path.join(output_dir, "blocking_rate_vs_load.png")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -94,7 +102,6 @@ def plot_key_blocking_rate_vs_load(df: pd.DataFrame, output_dir: str):
         "Key Blocking Rate",
     )
     _plot_strategy_lines(ax, df, "load", "key_blocking_rate")
-    ax.set_ylim(bottom=-0.02, top=1.02)
     path = os.path.join(output_dir, "key_blocking_rate_vs_load.png")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -109,7 +116,6 @@ def plot_classical_blocking_rate_vs_load(df: pd.DataFrame, output_dir: str):
         "Classical Blocking Rate",
     )
     _plot_strategy_lines(ax, df, "load", "classical_blocking_rate")
-    ax.set_ylim(bottom=-0.02, top=1.02)
     path = os.path.join(output_dir, "classical_blocking_rate_vs_load.png")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -138,7 +144,6 @@ def plot_classical_utilization_vs_load(df: pd.DataFrame, output_dir: str):
         "Avg Classical Utilization",
     )
     _plot_strategy_lines(ax, df, "load", "avg_classical_utilization")
-    ax.set_ylim(bottom=-0.02, top=1.02)
     path = os.path.join(output_dir, "classical_utilization_vs_load.png")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -153,7 +158,6 @@ def plot_key_utilization_vs_load(df: pd.DataFrame, output_dir: str):
         "Avg Key Utilization",
     )
     _plot_strategy_lines(ax, df, "load", "avg_key_utilization")
-    ax.set_ylim(bottom=-0.02, top=1.02)
     path = os.path.join(output_dir, "key_utilization_vs_load.png")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
