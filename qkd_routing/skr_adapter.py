@@ -77,16 +77,19 @@ def _build_embedded_skr_provider(config: SimulationConfig) -> Callable[[float, i
     quantum sits at 193.5 THz ± 12.5 GHz.
     """
 
+    n_quantum = getattr(config, 'n_quantum_channels', physics.N_QUANTUM_CHANNELS)
+
     def actual_skr(distance_m: float, n_active: int) -> float:
         """finite-key decoy BB84 + FWM/SpRS noise → kbps."""
         return physics.get_key_capacity_kbps(
             distance_m, num_classical_channels=n_active,
+            n_quantum_channels=n_quantum,
         )
 
     n_max = getattr(config, 'n_max_classical_channels', physics.N_CLASSICAL_CHANNELS)
     print(
         "[skr_adapter] Dynamic embedded SKR provider "
-        f"(finite-key decoy BB84, {n_max} ch max, 50 GHz grid, "
-        f"first-fit from {physics.CLASSICAL_BASE_FREQ_HZ/1e12:.1f} THz)"
+        f"(finite-key decoy BB84, {n_max} classical ch, {n_quantum} quantum ch, "
+        f"50 GHz grid, first-fit from {physics.CLASSICAL_BASE_FREQ_HZ/1e12:.1f} THz)"
     )
     return actual_skr

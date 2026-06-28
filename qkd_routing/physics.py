@@ -96,9 +96,10 @@ GAMMA_KS: float = 5.3  # Gaussian confidence multiplier
 #
 # Effective guard: 193.5 − 191.5625 ≈ 1.94 THz
 
-N_CLASSICAL_CHANNELS: int = 32          # max classical DWDM channels per edge
+N_CLASSICAL_CHANNELS: int = 16          # max classical DWDM channels per edge
+N_QUANTUM_CHANNELS: int = 16           # parallel QKD quantum channels per edge
 CLASSICAL_SPACING_HZ: float = 50e9      # channel spacing [Hz] (50 GHz)
-CLASSICAL_BANDWIDTH_PER_CH_GBPS: float = 200.0  # data-rate per classical ch [Gb/s]
+CLASSICAL_BANDWIDTH_PER_CH_GBPS: float = 100.0  # data-rate per classical ch [Gb/s]
 CLASSICAL_POWER_PER_CH_W: float = 3.16e-6  # fibre launch power per ch [W] (−25 dBm)
 CLASSICAL_BASE_FREQ_HZ: float = 190.0e12  # lowest classical centre freq [Hz]
 QUANTUM_FREQ_HZ: float = 193.5e12       # quantum-channel centre frequency [Hz]
@@ -588,6 +589,7 @@ def infinite_key_rate(
 def get_key_capacity_kbps(
     distance_m: float,
     num_classical_channels: int = 0,
+    n_quantum_channels: int = 4,
 ) -> float:
     """Return QKD key capacity in kb/s for a link of given length.
 
@@ -595,12 +597,18 @@ def get_key_capacity_kbps(
     classical channels on this link (0 = dark fibre).  When >0 the
     GNPy-based FWM + SpRS noise model is engaged.
 
+    ``n_quantum_channels`` is the number of parallel QKD quantum
+    channels multiplexed on the same fibre (default 4).  Total key
+    capacity scales linearly with the channel count.
+
     Parameters
     ----------
     distance_m : float
         Fibre span length [m].
     num_classical_channels : int
         Active classical channels (0 = dark fibre).
+    n_quantum_channels : int
+        Number of parallel QKD quantum channels.
 
     Returns
     -------
@@ -616,4 +624,4 @@ def get_key_capacity_kbps(
         p_noise = 0.0
 
     skr_bps, _bpp, _qber = approx_finite_key_rate(distance_m, p_noise)
-    return float(max(skr_bps, 0.0)) / 1000.0
+    return float(max(skr_bps, 0.0)) / 1000.0 * n_quantum_channels

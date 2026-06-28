@@ -193,15 +193,18 @@ class KeyCapacityAwareRouting(RoutingStrategy):
 
 
 class DualCapacityAwareRouting(RoutingStrategy):
-    """Among feasible K-shortest paths, pick the one with the highest
-    normalised **dual-resource** bottleneck::
+    """Among feasible K-shortest paths, minimise hop count first, then
+    maximise the normalised dual-resource bottleneck within the same hop tier::
 
-        maximise  min_e  min(
-            residual_classical[e] / request.bandwidth_gbps,
-            residual_key[e]      / request.key_rate_kbps,
-        )
+        1. Group candidates by hop count.
+        2. In the shortest-hop tier that has at least one feasible path,
+           select the path with the highest  min_e min(cl_frac, key_frac).
+        3. Fall back to the next hop tier only if the current tier is
+           fully infeasible.
 
-    Ties are broken by shortest total distance.
+    Using total-capacity fractions (not raw demand ratios) keeps both
+    dimensions on the same [0, 1] scale regardless of traffic mix.
+    Hop-tier grouping prevents unnecessary detours that drain key capacity.
     """
 
     name = "dual_capacity_aware"
@@ -211,35 +214,43 @@ class DualCapacityAwareRouting(RoutingStrategy):
         if not candidates:
             return None, "topology_blocking"
 
-        best_path = None
-        best_score = -1.0
-        best_distance = float("inf")
-
+        # Group candidates by hop count, preserving distance order within
+        from collections import defaultdict
+        by_hops: dict = defaultdict(list)
         for path, distance in candidates:
-            if not network.can_allocate_path(
-                path, request.bandwidth_gbps, request.key_rate_kbps
-            ):
-                continue
-            min_dual_ratio = float("inf")
-            for i in range(len(path) - 1):
-                edge = network.get_edge(path[i], path[i + 1])
-                classical_ratio = edge.classical_residual / max(
-                    request.bandwidth_gbps, 1e-9
-                )
-                key_ratio = edge.key_residual / max(request.key_rate_kbps, 1e-9)
-                dual = min(classical_ratio, key_ratio)
-                if dual < min_dual_ratio:
-                    min_dual_ratio = dual
-            if min_dual_ratio > best_score or (
-                abs(min_dual_ratio - best_score) < 1e-12
-                and distance < best_distance
-            ):
-                best_score = min_dual_ratio
-                best_distance = distance
-                best_path = path
+            by_hops[len(path)].append((path, distance))
 
-        if best_path is not None:
-            return best_path, "success"
+        for hop_count in sorted(by_hops):
+            best_path = None
+            best_score = -1.0
+            best_distance = float("inf")
+
+            for path, distance in by_hops[hop_count]:
+                if not network.can_allocate_path(
+                    path, request.bandwidth_gbps, request.key_rate_kbps
+                ):
+                    continue
+                # Bottleneck dual fraction: min over path edges of
+                # min(classical_residual/classical_total, key_residual/key_total)
+                min_dual_frac = float("inf")
+                for i in range(len(path) - 1):
+                    edge = network.get_edge(path[i], path[i + 1])
+                    cl_frac = edge.classical_residual / max(edge.classical_total, 1e-9)
+                    key_frac = edge.key_residual / max(edge.key_total, 1e-9)
+                    dual = min(cl_frac, key_frac)
+                    if dual < min_dual_frac:
+                        min_dual_frac = dual
+                if min_dual_frac > best_score or (
+                    abs(min_dual_frac - best_score) < 1e-12
+                    and distance < best_distance
+                ):
+                    best_score = min_dual_frac
+                    best_distance = distance
+                    best_path = path
+
+            if best_path is not None:
+                return best_path, "success"
+            # No feasible path in this hop tier → try next tier
 
         reason = classify_blocking_type(candidates, request, network)
         return None, reason

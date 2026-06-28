@@ -127,19 +127,19 @@ Examples:
     parser.add_argument(
         "--load-start",
         type=float,
-        default=20.0,
+        default=50.0,
         help="Starting offered load (Erlang, default: %(default)s)",
     )
     parser.add_argument(
         "--load-end",
         type=float,
-        default=160.0,
+        default=800.0,
         help="Ending offered load (Erlang, default: %(default)s)",
     )
     parser.add_argument(
         "--load-step",
         type=float,
-        default=20.0,
+        default=50.0,
         help="Load step size (default: %(default)s)",
     )
     parser.add_argument(

@@ -23,21 +23,22 @@ class SimulationConfig:
     # ---- Classical capacity mode ----
     classical_capacity_mode: str = "constant"
     # "constant" | "csv" | "gnpy_csv" | "gnpy_optional"
-    constant_classical_capacity_gbps: float = 6400.0  # 32 ch × 200 Gbps
+    constant_classical_capacity_gbps: float = 1600.0  # 16 ch × 100 Gbps
     classical_capacity_csv_path: Optional[str] = None
     gnpy_result_csv_path: Optional[str] = None
     # GSNR-to-capacity parameters (for gnpy_csv with GSNR data)
     gnpy_bandwidth_ghz: float = 75.0
     gnpy_osnr_margin_db: float = 3.0
     # WDM channel model
-    n_max_classical_channels: int = 32        # max DWDM channels per edge
-    classical_bandwidth_per_ch_gbps: float = 200.0  # data-rate per channel
+    n_max_classical_channels: int = 8         # max DWDM channels per edge
+    classical_bandwidth_per_ch_gbps: float = 100.0  # data-rate per channel
 
     # ---- QKD key capacity mode ----
     qkd_capacity_mode: str = "abstract"
     # "abstract" | "actual_skr"
     abstract_K0_kbps: float = 1000.0
     abstract_alpha_per_km: float = 0.02
+    n_quantum_channels: int = 16         # parallel QKD channels per edge
     old_project_root: Optional[str] = None
 
     # ---- Traffic parameters ----
@@ -53,17 +54,17 @@ class SimulationConfig:
             SecurityLevelConfig(
                 probability=0.5,
                 bandwidth_options=[10.0, 40.0],
-                key_rate_kbps=1.0,
+                key_rate_kbps=0.2,
             ),
             SecurityLevelConfig(
                 probability=0.3,
                 bandwidth_options=[40.0, 100.0],
-                key_rate_kbps=5.0,
+                key_rate_kbps=1.0,
             ),
             SecurityLevelConfig(
                 probability=0.2,
                 bandwidth_options=[100.0, 400.0],
-                key_rate_kbps=10.0,
+                key_rate_kbps=2.0,
             ),
         ]
     )
