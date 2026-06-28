@@ -20,7 +20,7 @@
 \IEEEauthorblockA{\textit{School of Information and Communication Engineering} \\
 \textit{Beijing University of Posts and Telecommunications}\\
 Beijing, China \\
-wangyuting007@bupt.edu.cn}
+wangyuting\_007@bupt.edu.cn}
 }
 
 \maketitle
@@ -61,8 +61,7 @@ wavelength slots on every link of its path.
 
 \subsection{Dual-Capacity Resource Model}
 
-Each edge $e \in E$ provides two types of capacity:
-\begin{itemize}
+Each edge $e \in E$ provides two types of capacit\begin{itemize}
     \item \textbf{Classical capacity} $C_e^{\text{cl}}$ (Gbps): determined by the modulation format and spectral efficiency of active classical wavelengths.
     \item \textbf{Key capacity} $K_e(\mathbf{x}_e)$ (kbps): the aggregate secret key rate supported by quantum channels on edge $e$, which depends on the binary occupancy vector $\mathbf{x}_e \in \{0,1\}^W$ indicating which wavelengths carry classical traffic on that edge.
 \end{itemize}
@@ -128,7 +127,7 @@ Figure~\ref{fig:skr_distance} shows the finite-key SKR vs.\ fiber distance for t
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/skr_vs_distance.png}}
-\caption{Finite-key decoy-state BB84 SKR vs.\ fiber distance for 0–8 co-propagating classical channels at $-25$~dBm/channel. Raman scattering from each additional classical channel degrades the achievable distance, motivating QKD-aware resource allocation.}
+\caption{Finite-key decoy-state BB84 SKR vs.\ fiber distance for 0–8 co-propagating classical channels at $-25$~dBm/channel.}
 \label{fig:skr_distance}
 \end{figure}
 
@@ -224,31 +223,21 @@ Traffic is generated via a Poisson process with offered load $\rho \in [50, 400]
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/blocking_rate_vs_load.png}}
-\caption{Total blocking rate vs.\ offered load for four routing strategies. Min-distance (MD) consistently achieves the lowest blocking by selecting shorter paths with higher per-link QKD key rates.}
+\caption{Total blocking rate vs.\ offered load for the four routing strategies.}
 \label{fig:routing}
 \end{figure}
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/key_blocking_rate_vs_load.png}}
-\caption{Key-capacity blocking rate vs.\ offered load. MD and KCA achieve the lowest key-blocking by favoring shorter or key-rich paths; all blocking is due to QKD key capacity (classical blocking is zero).}
+\caption{Quantum key-blocking rate relative to Min-Hop vs.\ offered load for the four routing strategies.}
 \label{fig:key_blocking}
 \end{figure}
 
-\begin{figure}[htbp]
-\centerline{\includegraphics[width=\columnwidth]{results/classical_blocking_rate_vs_load.png}}
-\caption{Classical-bandwidth blocking rate vs.\ offered load. With $W=32$ slots per edge (3200~Gbps), classical blocking is near zero across all loads, confirming QKD key capacity as the dominant constraint.}
-\label{fig:classical_blocking}
-\end{figure}
-
-Fig.~\ref{fig:routing} shows the total blocking rate across 50--400 Erlangs. With $W=32$ wavelength slots per edge, classical blocking is negligible across all simulated loads (Fig.~\ref{fig:classical_blocking}), confirming that QKD key capacity is the sole binding constraint in the simulated traffic regime. This makes physical sense: the 32-slot, 3200-Gbps classical capacity easily absorbs the mixed traffic (max demand 400~Gbps, 4 slots), leaving QKD key rates as the bottleneck.
-
-Fig.~\ref{fig:key_blocking} shows that min-distance (MD) achieves the lowest key-blocking rate at low-to-medium loads, outperforming min-hop (MH) by up to 1.2 percentage points (e.g.\ 0.7~pp at 50~Erlang, 1.2~pp at 200--250~Erlang); at the highest loads the strategies converge to within $\pm0.3$~pp as every path becomes key-limited. This is explained by the physics: shorter fiber paths accumulate less FWM and Raman noise, yielding higher per-link SKR. MD, by minimising total fiber length, inadvertently acts as a QKD-aware policy without explicit capacity metrics. KCA achieves performance nearly identical to MD ($\leq 0.5$~pp difference), confirming that key-residual-maximisation and distance-minimisation converge when fiber attenuation dominates QKD degradation. DCA, constrained to the shortest hop tier, shows higher blocking at medium-to-high loads because its hop-tier limit prevents it from selecting slightly longer paths with significantly better residual key capacity.
-
-Fig.~\ref{fig:utilisation} shows the time-averaged classical utilisation, which remains below 20\% across all loads due to the ample 32-slot capacity, while key utilisation saturates earlier, further supporting the QKD-capacity-dominant conclusion.
+Fig.~\ref{fig:routing} shows the total blocking rate across 50--400 Erlangs; classical-bandwidth blocking is essentially zero in this regime, so all blocking is due to QKD key capacity. Fig.~\ref{fig:key_blocking} compares the four strategies' key-blocking rate relative to min-hop: the strategies differ by at most $\approx 1.2$~percentage points, with min-distance generally lowest at low-to-medium load. Fig.~\ref{fig:utilisation} shows the average classical utilisation, which stays below 20\% across all loads.
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/classical_utilization_vs_load.png}}
-\caption{Average classical-channel utilisation vs.\ offered load. DCA maintains higher utilisation than MH at medium loads, indicating better resource exploitation through dual-capacity-aware path selection.}
+\caption{Average classical-channel utilisation vs.\ offered load for the four routing strategies.}
 \label{fig:utilisation}
 \end{figure}
 
@@ -256,13 +245,13 @@ Fig.~\ref{fig:utilisation} shows the time-averaged classical utilisation, which 
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/eval_rl_bars.png}}
-\caption{DQN vs.\ first-fit wavelength assignment (30 eval episodes, 1000 steps each): blocking rate, aggregate SKR, and episode reward. Zoomed y-axes highlight the performance gap.}
+\caption{DQN vs.\ first-fit wavelength assignment (30 evaluation episodes, 1000 steps each): blocking rate, aggregate SKR, and episode reward.}
 \label{fig:rl_bars}
 \end{figure}
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/eval_rl_curves.png}}
-\caption{DQN training reward curve ($5\times10^5$ steps) from EvalCallback (10 masked episodes every 5K steps). The reward rises quickly in the first 30K steps then stabilises well above the first-fit baseline of $\approx825$.}
+\caption{DQN training reward curve (10 masked evaluation episodes every 5K steps), with the first-fit baseline shown for reference.}
 \label{fig:rl_curves}
 \end{figure}
 
@@ -311,7 +300,7 @@ Key-Capacity-Aware  & 10.90\% & \textbf{9.88\%}  &  928 & \textbf{972}\\
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/eval_joint_rwa.png}}
-\caption{Joint routing + wavelength assignment: blocking rate (left) and aggregate SKR (right) for first-fit vs.\ DQN wavelength assignment under each routing strategy, on identical $k=3$ candidate paths.}
+\caption{Joint routing + wavelength assignment: blocking rate (left) and aggregate SKR (right) for first-fit vs.\ DQN wavelength assignment under each routing strategy.}
 \label{fig:joint_rwa}
 \end{figure}
 

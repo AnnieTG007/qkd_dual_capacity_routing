@@ -80,6 +80,32 @@ def _plot_strategy_lines(ax, df: pd.DataFrame, x_col: str, y_col: str,
         ax.set_ylim(max(0, ymin - margin), ymax + margin)
 
 
+def _plot_strategy_diff(ax, df: pd.DataFrame, x_col: str, y_col: str,
+                        baseline: str = "min_hop", max_load: float = 400.0):
+    """Plot each strategy's metric *relative to* a baseline strategy.
+
+    Subtracting the (shared) baseline curve cancels the dominant load trend so
+    the small inter-strategy differences become visible.  Values are shown in
+    percentage points; the baseline sits on the zero line.
+    """
+    df = df[df[x_col] <= max_load]
+    base = df[df["strategy"] == baseline].set_index(x_col)[y_col]
+    for strat in df["strategy"].unique():
+        sub = df[df["strategy"] == strat].sort_values(x_col)
+        style = STRATEGY_STYLES.get(strat, {})
+        diff_pp = (sub[y_col].values - base.reindex(sub[x_col]).values) * 100.0
+        ax.plot(
+            sub[x_col], diff_pp,
+            marker=style.get("marker", "o"),
+            linestyle=style.get("linestyle", "-"),
+            color=style.get("color", None),
+            label=style.get("label", strat),
+            linewidth=1.8, markersize=6,
+        )
+    ax.axhline(0.0, color="0.5", linewidth=1.0, linestyle="-", zorder=0)
+    ax.legend(fontsize=9, loc="best")
+
+
 def plot_blocking_rate_vs_load(df: pd.DataFrame, output_dir: str):
     """Overall blocking probability vs offered load."""
     fig, ax = _setup_figure(
@@ -95,13 +121,13 @@ def plot_blocking_rate_vs_load(df: pd.DataFrame, output_dir: str):
 
 
 def plot_key_blocking_rate_vs_load(df: pd.DataFrame, output_dir: str):
-    """Key-capacity blocking rate vs offered load."""
+    """Key-capacity (quantum) blocking rate vs offered load, relative to Min-Hop."""
     fig, ax = _setup_figure(
-        "Key-Capacity Blocking Rate vs Offered Load",
+        "Quantum Key-Blocking Rate vs Offered Load (relative to Min-Hop)",
         "Offered Load (Erlang)",
-        "Key Blocking Rate",
+        "Key-Blocking Rate − Min-Hop (pp)",
     )
-    _plot_strategy_lines(ax, df, "load", "key_blocking_rate")
+    _plot_strategy_diff(ax, df, "load", "key_blocking_rate", baseline="min_hop")
     path = os.path.join(output_dir, "key_blocking_rate_vs_load.png")
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)

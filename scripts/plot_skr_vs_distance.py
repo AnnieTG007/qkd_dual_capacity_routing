@@ -29,8 +29,8 @@ if str(_ROOT) not in sys.path:
 
 from qkd_routing import physics  # noqa: E402
 
-# Distances 1-320 km; per-quantum-channel SKR so the y-axis is the raw R_SKR.
-DISTANCES_KM = np.linspace(1.0, 320.0, 120)
+# Distances 1-150 km; per-quantum-channel SKR so the y-axis is the raw R_SKR.
+DISTANCES_KM = np.linspace(1.0, 150.0, 120)
 CLASSICAL_COUNTS = [0, 2, 4, 6, 8]
 COLORS = ["#2ca02c", "#1f77b4", "#9467bd", "#ff7f0e", "#d62728"]
 
