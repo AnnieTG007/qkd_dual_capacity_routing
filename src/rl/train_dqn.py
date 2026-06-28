@@ -66,6 +66,8 @@ def parse_args() -> argparse.Namespace:
                    help="Disable subprocess parallelism (debug)")
     p.add_argument("--device", type=str, default="auto",
                    help="Torch device (auto/cpu/cuda)")
+    p.add_argument("--resume", type=str, default=None, metavar="CHECKPOINT",
+                   help="Resume from checkpoint .zip (default: auto-find best_model.zip)")
     return p.parse_args()
 
 
@@ -158,28 +160,54 @@ def main() -> None:
         callback_after_eval=stop_callback,
     )
 
-    # Build DQN model
-    model = DQN(
-        "MlpPolicy",
-        vec_env,
-        learning_rate=args.learning_rate,
-        buffer_size=args.buffer_size,
-        learning_starts=args.learning_starts,
-        batch_size=args.batch_size,
-        tau=0.005,
-        gamma=0.99,
-        target_update_interval=args.target_update_interval,
-        train_freq=4,
-        gradient_steps=1,
-        exploration_fraction=args.exploration_fraction,
-        exploration_initial_eps=args.exploration_initial_eps,
-        exploration_final_eps=args.exploration_final_eps,
-        max_grad_norm=10.0,
-        policy_kwargs=build_policy_kwargs(),
-        seed=args.seed,
-        device=args.device,
-        verbose=1,
-    )
+    # Build or resume DQN model
+    if args.resume is not None or (args.resume is None and (_CHECKPOINT_DIR / "best_model.zip").exists() and False):
+        # explicit resume path
+        resume_path = args.resume
+    else:
+        resume_path = None
+
+    if args.resume is not None:
+        # Load checkpoint; if not a path, auto-find best_model.zip
+        ckpt = Path(args.resume) if args.resume != "auto" else _CHECKPOINT_DIR / "best_model.zip"
+        if not ckpt.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+        print(f"Resuming from: {ckpt}")
+        model = DQN.load(
+            str(ckpt),
+            env=vec_env,
+            device=args.device,
+            verbose=1,
+        )
+        # Override exploration to current (post-training) epsilon
+        model.exploration_rate = args.exploration_initial_eps
+        model.exploration_schedule = lambda progress: (
+            args.exploration_initial_eps
+            + (args.exploration_final_eps - args.exploration_initial_eps)
+            * (1 - progress)
+        )
+    else:
+        model = DQN(
+            "MlpPolicy",
+            vec_env,
+            learning_rate=args.learning_rate,
+            buffer_size=args.buffer_size,
+            learning_starts=args.learning_starts,
+            batch_size=args.batch_size,
+            tau=0.005,
+            gamma=0.99,
+            target_update_interval=args.target_update_interval,
+            train_freq=4,
+            gradient_steps=1,
+            exploration_fraction=args.exploration_fraction,
+            exploration_initial_eps=args.exploration_initial_eps,
+            exploration_final_eps=args.exploration_final_eps,
+            max_grad_norm=10.0,
+            policy_kwargs=build_policy_kwargs(),
+            seed=args.seed,
+            device=args.device,
+            verbose=1,
+        )
 
     # Train
     start_time = time.time()

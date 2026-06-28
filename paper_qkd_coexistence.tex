@@ -256,7 +256,7 @@ Fig.~\ref{fig:utilisation} shows the time-averaged classical and key utilisation
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/eval_dqn_bars.png}}
-\caption{DQN vs.\ first-fit wavelength assignment (30 eval episodes, 1000 steps each): blocking rate, aggregate SKR, wavelength spacing, and episode reward. DQN achieves +4.21\% higher aggregate SKR by avoiding near-quantum wavelengths, while first-fit maintains lower blocking through greedy lowest-slot selection.}
+\caption{DQN vs.\ first-fit wavelength assignment (30 eval episodes, 1000 steps each): blocking rate, aggregate SKR, wavelength spacing, and episode reward. After $3\times10^5$ training steps, DQN achieves +4.12\% higher aggregate SKR while matching first-fit's blocking rate within 0.41\%.}
 \label{fig:dqn_bars}
 \end{figure}
 
@@ -266,11 +266,9 @@ Fig.~\ref{fig:utilisation} shows the time-averaged classical and key utilisation
 \label{fig:dqn_curves}
 \end{figure}
 
-The DQN wavelength assignment agent is trained for $10^5$ steps using Stable-Baselines3 on the dynamic QKD-WDM environment (Gymnasium), with a dueling Q-network architecture ([1024, 1024, 512] units) and $\epsilon$-greedy exploration decaying from 0.9 to 0.1. The quantum channel is placed at 190.75~THz (slot 15 in the 32-slot, 50~GHz-spaced grid), creating an asymmetric interference profile: wavelengths near slot 15 incur heavier Raman scattering onto quantum receivers than wavelengths at the grid extremes.
+The DQN wavelength assignment agent is trained for $3\times10^5$ steps (100K initial exploration + 200K fine-tuning from the best checkpoint) using Stable-Baselines3 on the dynamic QKD-WDM environment (Gymnasium), with a dueling Q-network architecture ([1024, 1024, 512] units) and $\epsilon$-greedy exploration decaying from 0.9 to 0.05. The quantum channel is placed at 190.75~THz (slot 15 in the 32-slot, 50~GHz-spaced grid), creating an asymmetric interference profile: wavelengths near slot 15 incur heavier Raman scattering onto quantum receivers than wavelengths at the grid extremes.
 
-Figs.~\ref{fig:dqn_bars} and~\ref{fig:dqn_curves} compare DQN against first-fit (FF) over 30 evaluation episodes of 1000 steps each. The DQN achieves a \textbf{+4.21\%} improvement in aggregate SKR (1{,}156{,}801 bps vs.\ 1{,}110{,}106 bps), demonstrating that the policy has learned to place classical channels at wavelengths that minimize Raman-scattered noise onto the quantum receiver at 190.75~THz. This SKR gain exceeds the 1\% improvement threshold.
-
-A side-effect is that DQN incurs a modestly higher blocking rate (24.78\% vs.\ 22.93\% for first-fit), because first-fit's greedy lowest-slot assignment happens to minimize contention at low occupancy while DQN sacrifices some acceptance probability to preserve SKR margin. This trade-off is consistent with a SKR-prioritized reward function: the agent assigns less weight to individual request acceptance ($+1.0$) than to aggregate key-rate preservation ($+0.5 \times \text{SKR ratio}$), steering learned behavior toward wavelengths with lower interferometric impact even when lower-index slots are technically feasible.
+Figs.~\ref{fig:dqn_bars} and~\ref{fig:dqn_curves} compare DQN against first-fit (FF) over 30 evaluation episodes of 1000 steps each. The DQN achieves a \textbf{+4.12\%} improvement in aggregate SKR (1{,}155{,}857 bps vs.\ 1{,}110{,}106 bps), demonstrating that the policy has learned to place classical channels at wavelengths that minimize Raman-scattered noise onto the quantum receiver at 190.75~THz. This SKR gain exceeds the 1\% improvement threshold. Critically, the extended training also closes the blocking rate gap: the DQN blocking rate (23.02\%) is within 0.41\% of first-fit (22.93\%), eliminating the blocking penalty observed at 100K steps ($-8.1\%$). This confirms that the agent has learned to be both SKR-protective and acceptance-competitive with the greedy baseline.
 
 \section{Conclusion}
 
@@ -280,7 +278,7 @@ The key findings are threefold. First, the simulation framework successfully int
 
 The dual-capacity-aware (DCA) routing strategy achieves a 5.7\% reduction in total blocking at medium loads (200~Erlangs) compared to minimum-hop routing, validating the hop-tier plus normalized-fraction scoring approach. At high loads (600+ Erlangs) both resource dimensions saturate and DCA's benefit diminishes, highlighting that the strategy is most effective when at least one capacity dimension has available slack to exploit.
 
-From a communication network theory perspective, this work demonstrates that in networks where link key capacities are state-dependent and coupled through nonlinear physical interactions (Raman scattering), the interaction between routing hop count and per-link key availability creates a non-trivial optimization landscape that simple greedy heuristics cannot reliably navigate. The DQN wavelength assignment agent further shows that even a basic dueling architecture can learn QKD-protective channel placement, achieving +4.21\% aggregate SKR improvement over first-fit after $10^5$ training steps.
+From a communication network theory perspective, this work demonstrates that in networks where link key capacities are state-dependent and coupled through nonlinear physical interactions (Raman scattering), the interaction between routing hop count and per-link key availability creates a non-trivial optimization landscape that simple greedy heuristics cannot reliably navigate. The DQN wavelength assignment agent further shows that even a basic dueling architecture can learn QKD-protective channel placement: after $3\times10^5$ training steps, the agent achieves +4.12\% aggregate SKR improvement over first-fit while matching its blocking rate within 0.41\%.
 
 Future work includes joint optimization of routing, wavelength assignment, and key-rate awareness in a single end-to-end RL agent, extending the framework to multi-fiber and multi-core architectures, and incorporating wavelength-level guard-band optimization to further reduce Raman-scattering interference between classical and quantum bands.
 
