@@ -26,7 +26,7 @@ wangyuting007@bupt.edu.cn}
 \maketitle
 
 \begin{abstract}
-This paper studies joint routing and wavelength assignment (RWA) for quantum key distribution (QKD) coexisting with classical traffic in WDM optical networks. Four-wave mixing (FWM) and spontaneous Raman scattering (SpRS) from classical channels degrade per-link key capacity in a wavelength-dependent manner, creating a dual-constrained resource allocation problem. We propose a two-layer framework: four path-selection strategies with increasing QKD awareness at the routing layer, and a DQN agent at the wavelength assignment layer. Experiments on the NSFNET 14-node topology show that with 32 wavelength slots per edge, QKD key capacity is the sole bottleneck: classical blocking is negligible and min-distance routing reduces blocking by up to 1.5 percentage points over min-hop by naturally selecting shorter, lower-noise paths. The DQN wavelength assignment agent further reduces blocking by 11.7\% and improves aggregate secret key rate by 4.5\% over first-fit assignment.
+This paper studies joint routing and wavelength assignment (RWA) for quantum key distribution (QKD) coexisting with classical traffic in WDM optical networks. Four-wave mixing (FWM) and spontaneous Raman scattering (SpRS) from classical channels degrade per-link key capacity in a wavelength-dependent manner, creating a dual-constrained resource allocation problem. We propose a two-layer framework: four path-selection strategies with increasing QKD awareness at the routing layer, and a DQN agent at the wavelength assignment layer. Experiments on the NSFNET 14-node topology show that with 32 wavelength slots per edge, QKD key capacity is the sole bottleneck: classical blocking is negligible and min-distance routing reduces key-blocking by up to 1.2 percentage points over min-hop at low-to-medium load by naturally selecting shorter, lower-noise paths. The DQN wavelength assignment agent further reduces blocking by 9.3\% and improves aggregate secret key rate by 4.0\% over first-fit assignment.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -124,7 +124,7 @@ with protocol parameters $\mu = 0.75$ (signal), $\nu = 0.2$ (decoy), $q = 1/2$, 
 
 A link $e$ is \emph{reliable} if $R_{\text{SKR}} > 0$ for all quantum channels on that link given the current classical occupancy $\mathbf{x}_e$. The total key capacity of link $e$ is $K_e(\mathbf{x}_e) = N_q \cdot R_{\text{SKR}} \cdot R_{\text{rep}}$, where $N_q$ is the number of parallel quantum channels and $R_{\text{rep}} = 50$~MHz is the pulse repetition rate.
 
-Figure~\ref{fig:skr_distance} shows the finite-key SKR vs.\ fiber distance for the default protocol parameters, computed using the self-contained \texttt{qkd\_routing/physics.py} module. At zero noise ($p_{\text{noise}} = 0$), the SKR remains positive beyond 300~km. With realistic SpRS noise from adjacent classical channels, the achievable distance shortens significantly, motivating the joint routing and wavelength assignment optimization.
+Figure~\ref{fig:skr_distance} shows the finite-key SKR vs.\ fiber distance for the default protocol parameters, computed using the self-contained \texttt{qkd\_routing/physics.py} module. On a dark fiber ($p_{\text{noise}} = 0$), the SKR remains positive out to roughly 150~km. With realistic SpRS noise from adjacent classical channels the achievable distance shortens sharply---to about 80~km with 2 co-propagating channels and below 50~km with 8---motivating the joint routing and wavelength assignment optimization.
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{results/skr_vs_distance.png}}
@@ -191,19 +191,22 @@ We model wavelength assignment as a Markov decision process (MDP). At each decis
 \begin{itemize}
     \item \textbf{State} $s_t$: A vector encoding (i) the binary wavelength occupancy matrix $\mathbf{X} \in \{0,1\}^{|E| \times W}$ showing which wavelengths are occupied on which edges, (ii) the requested path $p$ as an edge-index mask, (iii) the quantum channel positions on each edge, and (iv) the request parameters $(b_r, k_r)$.
     \item \textbf{Action} $a_t \in \{1, \ldots, W\}$: The wavelength index to assign. An action mask eliminates infeasible wavelengths (occupied on any edge of $p$, or would violate the SKR reliability constraint).
-    \item \textbf{Reward} $r_t$: A composite reward with three components:
+    \item \textbf{Reward} $r_t$: A composite accept/preserve reward,
     \begin{equation}
-    r_t = r_{\text{accept}} + \alpha \cdot r_{\text{SKR}} + \beta \cdot r_{\text{spacing}},
+    r_t = \begin{cases}
+        1 + 2\,\min\!\left(\rho_{\text{SKR}},\, 1\right), & \text{if accepted},\\[2pt]
+        -3, & \text{if blocked},
+    \end{cases}
     \label{eq:reward}
     \end{equation}
-    where $r_{\text{accept}} = +1$ for a successful assignment ($-10$ if blocked), $r_{\text{SKR}}$ is the minimum residual key ratio across all edges after the assignment (encouraging the agent to preserve key capacity), and $r_{\text{spacing}}$ rewards placing the classical wavelength as far as possible from quantum channel frequencies (reducing FWM and SpRS crosstalk).
+    where $\rho_{\text{SKR}} = \min_{e \in p} \text{SKR}^{\text{after}}_e / \text{SKR}^{\text{before}}_e$ is the bottleneck post-assignment key ratio across the path edges, clipped to $[0,1]$. This yields $r_t \in [+1, +3]$ for accepted requests, so the agent is rewarded for accepting while preserving key capacity (placements that drive heavier FWM/SpRS noise onto the quantum channel lower $\rho_{\text{SKR}}$ and hence the reward), and penalised for blocking. The break-even acceptance rate $3/5 = 60\%$ lies well below the observed rate, giving a positive learning signal.
 \end{itemize}
 
 \paragraph{Network Architecture and Training}
 
-We implement the DQN agent \cite{b11} with a dueling Q-network: a shared feature extractor (three fully-connected layers of 1024, 1024, and 512 units with ReLU activations) followed by separate value and advantage streams. Action masking is applied at inference by setting infeasible actions' Q-values to $-\infty$ before argmax selection. Key hyperparameters: $\epsilon$-greedy exploration decaying from 0.9 to 0.05 over $5\times10^5$ steps; replay buffer $10^6$, batch size 4096, learning starts after 10,000 steps; target network updated every 5,000 steps; Adam optimizer, learning rate $3\times10^{-4}$, Huber loss. The best checkpoint (step 125K, eval reward 2321) is selected by an evaluation callback that runs 10 masked episodes every 25K steps.
+We implement the DQN agent \cite{b11} with a dueling Q-network: a shared feature extractor (three fully-connected layers of 1024, 1024, and 512 units with ReLU activations) followed by separate value and advantage streams. Action masking is applied at inference by setting infeasible actions' Q-values to $-\infty$ before argmax selection. Key hyperparameters: $\epsilon$-greedy exploration decaying from 0.9 to 0.05 over $5\times10^5$ steps; replay buffer $10^6$, batch size 4096, learning starts after 10,000 steps; target network updated every 5,000 steps; Adam optimizer, learning rate $3\times10^{-4}$, Huber loss. The best checkpoint (step 40K, eval reward 2333) is selected by an evaluation callback that runs 10 masked episodes every 5K steps; training early-stops after 20 evaluations without improvement (here at $\approx$140K steps).
 
-The environment is a custom Gymnasium environment wrapping the discrete-event simulation engine, the FWM/SpRS noise solvers, and the SKR computation, running on 16 parallel DummyVecEnv instances.
+The environment is a custom Gymnasium environment wrapping the discrete-event simulation engine, the FWM/SpRS noise solvers, and the SKR computation, running on 16 parallel SubprocVecEnv instances.
 
 \subsection{Complexity Analysis}
 
@@ -239,7 +242,7 @@ Traffic is generated via a Poisson process with offered load $\rho \in [50, 400]
 
 Fig.~\ref{fig:routing} shows the total blocking rate across 50--400 Erlangs. With $W=32$ wavelength slots per edge, classical blocking is negligible across all simulated loads (Fig.~\ref{fig:classical_blocking}), confirming that QKD key capacity is the sole binding constraint in the simulated traffic regime. This makes physical sense: the 32-slot, 3200-Gbps classical capacity easily absorbs the mixed traffic (max demand 400~Gbps, 4 slots), leaving QKD key rates as the bottleneck.
 
-Fig.~\ref{fig:key_blocking} shows that min-distance (MD) consistently achieves the lowest key-blocking rate, outperforming min-hop (MH) by 0.6--1.5 percentage points across all loads. This is explained by the physics: shorter fiber paths accumulate less FWM and Raman noise, yielding higher per-link SKR. MD, by minimising total fiber length, inadvertently acts as a QKD-aware policy without explicit capacity metrics. KCA achieves performance nearly identical to MD ($\leq 0.5$~pp difference), confirming that key-residual-maximisation and distance-minimisation converge when fiber attenuation dominates QKD degradation. DCA, constrained to the shortest hop tier, shows higher blocking at medium-to-high loads because its hop-tier limit prevents it from selecting slightly longer paths with significantly better residual key capacity.
+Fig.~\ref{fig:key_blocking} shows that min-distance (MD) achieves the lowest key-blocking rate at low-to-medium loads, outperforming min-hop (MH) by up to 1.2 percentage points (e.g.\ 0.7~pp at 50~Erlang, 1.2~pp at 200--250~Erlang); at the highest loads the strategies converge to within $\pm0.3$~pp as every path becomes key-limited. This is explained by the physics: shorter fiber paths accumulate less FWM and Raman noise, yielding higher per-link SKR. MD, by minimising total fiber length, inadvertently acts as a QKD-aware policy without explicit capacity metrics. KCA achieves performance nearly identical to MD ($\leq 0.5$~pp difference), confirming that key-residual-maximisation and distance-minimisation converge when fiber attenuation dominates QKD degradation. DCA, constrained to the shortest hop tier, shows higher blocking at medium-to-high loads because its hop-tier limit prevents it from selecting slightly longer paths with significantly better residual key capacity.
 
 Fig.~\ref{fig:utilisation} shows the time-averaged classical utilisation, which remains below 20\% across all loads due to the ample 32-slot capacity, while key utilisation saturates earlier, further supporting the QKD-capacity-dominant conclusion.
 
@@ -275,23 +278,23 @@ Figs.~\ref{fig:rl_bars} and~\ref{fig:rl_curves} compare DQN against first-fit (F
 \hline
 \textbf{Metric} & \textbf{DQN} & \textbf{First-Fit} \\
 \hline
-Blocking Rate       & \textbf{20.88\%} & 23.64\% \\
-Classical Util.     & \textbf{2.44\%}  & 2.37\%  \\
-Agg.\ SKR (kbps)   & \textbf{1162.2}  & 1111.8  \\
-Episode Reward      & \textbf{1126.0}  & 825.2   \\
+Blocking Rate       & \textbf{25.91\%} & 28.56\% \\
+Classical Util.     & \textbf{2.46\%}  & 2.36\%  \\
+Agg.\ SKR (kbps)   & \textbf{1156.6}  & 1111.7  \\
+Episode Reward      & \textbf{842.7}   & 562.4   \\
 \hline
 \end{tabular}
 \end{table}
 
-The DQN achieves a \textbf{$-11.7\%$} reduction in blocking rate relative to first-fit (20.88\% vs.\ 23.64\%) and a \textbf{$+4.5\%$} gain in aggregate SKR (1{,}162~kbps vs.\ 1{,}112~kbps). Blocking reason analysis shows that mixed classical-and-key blocks account for $\approx77\%$ of all blocked requests in both policies, indicating that the bottleneck lies in the joint resource constraint rather than pure wavelength availability. The DQN's improvement stems from learning to avoid FWM-resonant wavelength placements that would degrade the quantum channel SKR, effectively translating physical-layer noise awareness into better long-term resource decisions.
+The DQN achieves a \textbf{$-9.3\%$} reduction in blocking rate relative to first-fit (25.91\% vs.\ 28.56\%) and a \textbf{$+4.0\%$} gain in aggregate SKR (1{,}157~kbps vs.\ 1{,}112~kbps). Blocking reason analysis shows that mixed classical-and-key blocks account for $\approx73\%$ of all blocked requests in both policies, indicating that the bottleneck lies in the joint resource constraint rather than pure wavelength availability. The DQN's improvement stems from learning to avoid FWM-resonant wavelength placements that would degrade the quantum channel SKR, effectively translating physical-layer noise awareness into better long-term resource decisions.
 
 \section{Conclusion}
 
 This paper has formulated the joint routing and wavelength assignment problem for QKD-classical coexistence in WDM optical networks and proposed a two-layer solution framework integrating capacity-aware routing with deep reinforcement learning for wavelength selection.
 
-The key findings are threefold. First, the simulation framework integrates a self-contained finite-key decoy-state BB84 model with discrete FWM and SpRS noise computation, enabling dynamic per-link key capacity evaluation that depends on instantaneous classical wavelength occupancy. Second, the dominant noise impairment under conservative launch power ($-25$~dBm/channel) and 50~GHz channel spacing is spontaneous Raman scattering; FWM is strongly phase-mismatch-suppressed at this spacing. Third, the DQN wavelength assignment agent outperforms first-fit on blocking rate ($-11.7\%$) and aggregate SKR ($+4.5\%$).
+The key findings are threefold. First, the simulation framework integrates a self-contained finite-key decoy-state BB84 model with discrete FWM and SpRS noise computation, enabling dynamic per-link key capacity evaluation that depends on instantaneous classical wavelength occupancy. Second, the dominant noise impairment under conservative launch power ($-25$~dBm/channel) and 50~GHz channel spacing is spontaneous Raman scattering; FWM is strongly phase-mismatch-suppressed at this spacing. Third, the DQN wavelength assignment agent outperforms first-fit on blocking rate ($-9.3\%$) and aggregate SKR ($+4.0\%$).
 
-The dual-capacity-aware (DCA) routing strategy achieves a 5.7\% reduction in total blocking at medium loads (200~Erlangs) compared to minimum-hop routing, and the DQN wavelength agent further reduces blocking by 11.7\% and improves aggregate SKR by 4.5\% over first-fit. Blocking cause analysis shows that $\approx77\%$ of blocks arise from mixed classical-and-key capacity exhaustion, confirming that the fundamental bottleneck is the joint dual-capacity constraint rather than wavelength-only scarcity.
+Minimum-distance (MD) routing achieves up to a 1.2~percentage-point reduction in key-blocking at low-to-medium loads compared to minimum-hop routing, and the DQN wavelength agent further reduces blocking by 9.3\% and improves aggregate SKR by 4.0\% over first-fit. Blocking cause analysis shows that $\approx73\%$ of blocks arise from mixed classical-and-key capacity exhaustion, confirming that the fundamental bottleneck is the joint dual-capacity constraint rather than wavelength-only scarcity.
 
 
 \begin{thebibliography}{00}
@@ -317,17 +320,18 @@ The dual-capacity-aware (DCA) routing strategy achieves a 5.7\% reduction in tot
 All results can be reproduced from the project root with the \texttt{qkd\_env} conda environment.
 
 \begin{verbatim}
-# 1. Routing simulation (4 strategies, load sweep 50-800 Erlang):
+# 1. Routing simulation (4 strategies, load sweep 50-400 Erlang):
 python run.py --qkd-capacity-mode actual_skr \
-  --load-start 50 --load-end 800 --load-step 50 \
+  --load-start 50 --load-end 400 --load-step 50 \
   --num-requests 5000 --seed 42
 
-# 2. DQN training (500K steps, ~1.8 h on CPU):
+# 2. DQN training (500K-step budget, early-stopped
+#    at ~140K steps, ~0.7 h on a single GPU):
 python -m src.rl.train_dqn \
   --total-timesteps 500000 --learning-rate 3e-4 \
   --learning-starts 10000 --target-update-interval 5000 \
-  --exploration-final-eps 0.05 --eval-freq 25000 \
-  --n-eval-episodes 10 --max-steps 2000 --no-subproc
+  --exploration-final-eps 0.05 --eval-freq 5000 \
+  --n-eval-episodes 10 --max-steps 2000 --device cuda
 
 # 3. Evaluation (DQN vs First-Fit, 30 episodes):
 python -m src.rl.eval_rl \

@@ -509,21 +509,46 @@ class QKDWDMEnv(gym.Env):
 
     # ── helpers ──────────────────────────────────────────────────────────
 
+    @property
+    def _n_slots(self) -> int:
+        """Number of contiguous wavelength slots the current request needs.
+
+        Matches ``qkd_routing/resources.py`` (``ceil(bw / bw_per_ch)``): a
+        400-Gbps request over a 100-Gbps grid needs 4 wavelengths.
+        """
+        return max(1, math.ceil(self.request_bw / self.cfg.classical_bandwidth_gbps))
+
     def _pre_generate_requests(self) -> None:
-        """Pre-generate Poisson arrivals for deterministic replay."""
+        """Pre-generate Poisson arrivals for deterministic replay.
+
+        Bandwidth and key demands are drawn per security level to match the
+        routing simulation (``qkd_routing/config.py``).  A 400-Gbps request
+        therefore needs ``ceil(400 / 100) = 4`` wavelength slots, exercising
+        the multi-slot allocation path (see :pyattr:`_n_slots`).
+        """
         lam = self.cfg.arrival_rate
         rng = np.random.default_rng(self.cfg.seed)
+        # (cumulative probability, bandwidth options [Gbps], key demand [kbps])
+        # mirrors SimulationConfig.security_levels:
+        #   Low  p=0.5  bw∈{10,40}   key=0.2
+        #   Med  p=0.3  bw∈{40,100}  key=1.0
+        #   High p=0.2  bw∈{100,400} key=2.0
+        sec_levels = [
+            (0.5, [10.0, 40.0], 0.2),
+            (0.3, [40.0, 100.0], 1.0),
+            (0.2, [100.0, 400.0], 2.0),
+        ]
+        cum = np.cumsum([p for p, _, _ in sec_levels])
         t = 0.0
         for _ in range(self.cfg.max_steps * 2):  # oversample
             t += rng.exponential(1.0 / lam)
             if t > self.cfg.max_steps * self.cfg.mean_holding_time_s * 2:
                 break
-            # Random bw and key demand.
-            # 1 kbps is achievable on all 50-100 km RL edges even after
-            # adding several classical channels (dark-fiber SKR: 28 kbps @ 50 km,
-            # 2.4 kbps @ 100 km).  Higher demands would be infeasible everywhere.
-            bw = self.cfg.classical_bandwidth_gbps
-            key = rng.uniform(0.5, 2.0)   # kbps, variable per request
+            # Pick a security level, then bandwidth/key for that level.
+            lvl = int(np.searchsorted(cum, rng.uniform() * cum[-1]))
+            lvl = min(lvl, len(sec_levels) - 1)
+            _, bw_options, key = sec_levels[lvl]
+            bw = float(rng.choice(bw_options))
             self._request_queue.append((bw, key))
 
     def _skr_for_edge(self, e: int) -> float:
@@ -572,42 +597,64 @@ class QKDWDMEnv(gym.Env):
         return self._get_action_mask()
 
     def _get_action_mask(self) -> np.ndarray:
-        """Build action mask: feasible wavelengths on the chosen path."""
-        mask = np.ones(self.W, dtype=np.int8)
+        """Build action mask over feasible *start* wavelengths on the path.
 
-        # Reserve quantum slot and one guard slot on each side
+        The action is the start index of a contiguous block of ``n_slots``
+        wavelengths (one per 100-Gbps sub-channel of the request).  A start
+        ``w`` is feasible only if every slot ``w .. w+n_slots-1`` is:
+          * not the quantum slot or its guard bands,
+          * free on all path edges, and
+          * leaves the post-allocation SKR ≥ the key demand on all path edges
+            once *all* ``n_slots`` channels are added.
+        Start positions with ``w + n_slots > W`` are masked out.
+        """
+        n = self._n_slots
+
+        # Per-slot usability: quantum guard band first.
         q_slot = int(round(
             (self.cfg.quantum_freq_hz - self.cfg.base_freq_hz)
             / self.cfg.channel_spacing_hz
         ))
+        slot_usable = np.ones(self.W, dtype=bool)
         for gs in range(q_slot - 1, q_slot + 2):
             if 0 <= gs < self.W:
-                mask[gs] = 0
+                slot_usable[gs] = False
 
         if self.path_mask is None:
+            # No path context: a start is valid if its whole block is usable.
+            mask = np.zeros(self.W, dtype=np.int8)
+            for w in range(self.W - n + 1):
+                if slot_usable[w:w + n].all():
+                    mask[w] = 1
             return mask
 
         path_edges = np.where(self.path_mask > 0)[0]
-        # Wavelength must be free on ALL path edges
+        # Wavelength must be free on ALL path edges.
         for w in range(self.W):
-            if mask[w] == 0:
+            if not slot_usable[w]:
                 continue
             for e in path_edges:
                 if self.occupancy[e, w] > 0:
-                    mask[w] = 0
+                    slot_usable[w] = False
                     break
 
-        # Mask wavelengths that would drop SKR below the key demand on any path edge.
+        # Candidate starts: full block of n usable (free, non-guard) slots.
+        mask = np.zeros(self.W, dtype=np.int8)
+        for w in range(self.W - n + 1):
+            if slot_usable[w:w + n].all():
+                mask[w] = 1
+
+        # SKR feasibility: adding all n channels must keep SKR ≥ key demand.
         # _skr_for_edge returns bps; request_key is kbps → convert.
         key_demand_bps = self.request_key * 1000.0
         for w in range(self.W):
             if mask[w] == 0:
                 continue
             for e in path_edges:
-                occ_before = self.occupancy[e, w]
-                self.occupancy[e, w] = 1.0
+                occ_before = self.occupancy[e, w:w + n].copy()
+                self.occupancy[e, w:w + n] = 1.0
                 new_skr = self._skr_for_edge(e)
-                self.occupancy[e, w] = occ_before
+                self.occupancy[e, w:w + n] = occ_before
                 if new_skr < key_demand_bps:
                     mask[w] = 0
                     break
@@ -626,31 +673,35 @@ class QKDWDMEnv(gym.Env):
         if self.path_mask is None:
             return "classical"
 
+        n = self._n_slots
         path_edges = np.where(self.path_mask > 0)[0]
         q_slot = int(round(
             (self.cfg.quantum_freq_hz - self.cfg.base_freq_hz)
             / self.cfg.channel_spacing_hz
         ))
 
-        occupancy_free = 0
-        skr_blocked = 0
+        occupancy_free = 0   # start positions with a full free, non-guard block
+        skr_blocked = 0      # of those, how many fail the SKR constraint
         key_demand_bps = self.request_key * 1000.0
 
-        for w in range(self.W):
-            # skip quantum guard band
-            if abs(w - q_slot) <= 1:
+        for w in range(self.W - n + 1):
+            block = range(w, w + n)
+            # whole block must avoid the quantum guard band
+            if any(abs(s - q_slot) <= 1 for s in block):
                 continue
-            # check occupancy
-            occ_ok = all(self.occupancy[e, w] == 0 for e in path_edges)
+            # whole block must be free on all path edges
+            occ_ok = all(
+                self.occupancy[e, s] == 0 for e in path_edges for s in block
+            )
             if not occ_ok:
                 continue
             occupancy_free += 1
-            # check SKR
+            # check SKR after adding all n channels
             skr_ok = True
             for e in path_edges:
-                self.occupancy[e, w] = 1.0
+                self.occupancy[e, w:w + n] = 1.0
                 new_skr = self._skr_for_edge(e)
-                self.occupancy[e, w] = 0.0
+                self.occupancy[e, w:w + n] = 0.0
                 if new_skr < key_demand_bps:
                     skr_ok = False
                     break
@@ -729,9 +780,10 @@ class QKDWDMEnv(gym.Env):
         edge_skr_before = self.edge_skr.copy()
 
         if feasible:
-            # Allocate wavelength
+            # Allocate the contiguous block of n_slots wavelengths.
+            n = self._n_slots
             for e in path_edges:
-                self.occupancy[e, action] = 1.0
+                self.occupancy[e, action:action + n] = 1.0
             self.edge_skr = self._compute_edge_skr()
 
         # Reward
